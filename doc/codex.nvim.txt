@@ -84,6 +84,7 @@ Default options:
     },
     dynamic_tools = {
       enabled = true,
+      prefer_nvim_apply_patch = true,
     },
   })
 <
@@ -119,9 +120,10 @@ Run:
 <
 
 The health provider checks the Neovim version, `codex` executable,
-app-server command shape, `git` for `nvim.apply_patch`, optional picker and
-completion integrations, and dynamic tool registration. `:Codex health`
-performs the runtime app-server initialization check.
+app-server stdio support, app-server command shape, `git` for
+`nvim.apply_patch`, optional picker and completion integrations, and dynamic
+tool registration. `:Codex health` performs the runtime app-server
+initialization check.
 
 ==============================================================================
 PROMPT TOKENS                                    *codex.nvim-prompt-tokens*
@@ -182,7 +184,10 @@ Modern app-server requests use `item/fileChange/requestApproval`. Legacy
 `applyPatchApproval` requests are supported as a fallback. The `nvim.apply_patch`
 dynamic tool uses the same review UI, but Neovim owns the final apply step: it
 refuses to overwrite modified loaded buffers, runs `git apply --check`, and
-applies only after approval.
+applies only after approval. When `dynamic_tools.prefer_nvim_apply_patch` is
+enabled, codex.nvim adds thread developer instructions asking Codex to prefer
+`nvim.apply_patch` for workspace edits while preserving user-provided
+developer instructions.
 
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*

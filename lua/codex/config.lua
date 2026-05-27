@@ -47,6 +47,7 @@ local defaults = {
   },
   dynamic_tools = {
     enabled = true,
+    prefer_nvim_apply_patch = true,
   },
 }
 

@@ -18,9 +18,9 @@ local function executable(command)
   end
 end
 
-local function system_text(command)
+local function system_text(command, timeout_ms)
   local ok, result = pcall(function()
-    return vim.system(command, { text = true }):wait()
+    return vim.system(command, { text = true }):wait(timeout_ms)
   end)
   if not ok then
     return nil, tostring(result)
@@ -29,6 +29,21 @@ local function system_text(command)
     return nil, result.stderr ~= "" and result.stderr or result.stdout
   end
   return vim.trim(result.stdout ~= "" and result.stdout or result.stderr)
+end
+
+local function app_server_help(executable_name)
+  if not executable_name or executable_name == "" then
+    return nil, "missing executable"
+  end
+  return system_text({ executable_name, "app-server", "--help" }, 5000)
+end
+
+local function app_server_supported(executable_name)
+  local help, err = app_server_help(executable_name)
+  if not help then
+    return false, err
+  end
+  return help:match("app%-server") ~= nil and help:match("%-%-listen") ~= nil, help
 end
 
 local function has_module(name)
@@ -55,6 +70,14 @@ function M.check()
       vim.health.info(version)
     elseif err and err ~= "" then
       vim.health.warn(("Could not read Codex version: %s"):format(vim.trim(err)))
+    end
+    local supported, support_err = app_server_supported(app_executable)
+    if supported then
+      vim.health.ok("Codex executable supports app-server stdio mode")
+    else
+      vim.health.error(
+        ("Codex executable does not appear to support app-server stdio mode: %s"):format(vim.trim(support_err or ""))
+      )
     end
   else
     vim.health.error(("Codex executable is not available: %s"):format(app_executable or command_label(app_command)))
@@ -102,5 +125,6 @@ end
 
 M._command_label = command_label
 M._executable = executable
+M._app_server_supported = app_server_supported
 
 return M

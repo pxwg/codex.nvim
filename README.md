@@ -99,6 +99,7 @@ require("codex").setup({
   },
   dynamic_tools = {
     enabled = true,
+    prefer_nvim_apply_patch = true,
   },
 })
 ```
@@ -125,7 +126,7 @@ Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submi
 
 ## Health
 
-Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server command shape, `git` for `nvim.apply_patch`, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
+Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server stdio support, app-server command shape, `git` for `nvim.apply_patch`, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
 
 ## Prompt Tokens
 
@@ -169,7 +170,7 @@ Review keys:
 - `<CR>` / `o`: open the related file at the hunk location when available
 - `q`: close the review window without answering
 
-The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval.
+The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval. When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread developer instructions that ask Codex to prefer `nvim.apply_patch` for workspace edits while preserving any user-provided developer instructions.
 
 ## Architecture
 

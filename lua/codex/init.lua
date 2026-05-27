@@ -52,6 +52,32 @@ local function ensure_server(callback)
   end)
 end
 
+local function edit_tool_instruction()
+  local dynamic = config.get().dynamic_tools or {}
+  if dynamic.enabled == false or dynamic.prefer_nvim_apply_patch == false then
+    return nil
+  end
+  return table.concat({
+    "When changing workspace files from codex.nvim, prefer the nvim.apply_patch dynamic tool for edits.",
+    "Provide a unified diff in the tool's patch argument. Neovim will show the diff for user review and will only apply it after approval.",
+    "Use native file-change tools only when nvim.apply_patch is unavailable or unsuitable for the requested edit.",
+  }, " ")
+end
+
+local function compose_developer_instructions(value)
+  local instruction = edit_tool_instruction()
+  if not instruction then
+    return value
+  end
+  if value == nil or value == vim.NIL or value == "" then
+    return instruction
+  end
+  if type(value) == "table" then
+    return table.concat(value, "\n\n") .. "\n\n" .. instruction
+  end
+  return tostring(value) .. "\n\n" .. instruction
+end
+
 local function thread_start_params(opts)
   opts = opts or {}
   local cfg = config.get().thread
@@ -67,7 +93,7 @@ local function thread_start_params(opts)
     sandbox = opts.sandbox or cfg.sandbox,
     permissions = opts.permissions or cfg.permissions,
     baseInstructions = opts.base_instructions or cfg.base_instructions,
-    developerInstructions = opts.developer_instructions or cfg.developer_instructions,
+    developerInstructions = compose_developer_instructions(opts.developer_instructions or cfg.developer_instructions),
     personality = opts.personality or cfg.personality,
     ephemeral = opts.ephemeral ~= nil and opts.ephemeral or cfg.ephemeral,
     sessionStartSource = "startup",
@@ -385,5 +411,8 @@ function M.complete_command()
   table.sort(names)
   return names
 end
+
+M._thread_start_params = thread_start_params
+M._compose_developer_instructions = compose_developer_instructions
 
 return M

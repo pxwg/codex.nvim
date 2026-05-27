@@ -6,6 +6,14 @@ assert(
   #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
   "explicit setup should register lifecycle cleanup"
 )
+local start_params = codex._thread_start_params({ cwd = vim.fn.getcwd() })
+assert(
+  type(start_params.developerInstructions) == "string" and start_params.developerInstructions:match("nvim%.apply_patch"),
+  "thread/start should instruct Codex to prefer Neovim patch review"
+)
+local composed_instructions = codex._compose_developer_instructions("custom instruction")
+assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
+assert(composed_instructions:match("nvim%.apply_patch"), "default edit instruction should mention nvim.apply_patch")
 codex.setup()
 assert(
   #vim.api.nvim_get_autocmds({ group = "CodexNvimLifecycle", event = "VimLeavePre" }) == 1,
@@ -17,6 +25,8 @@ assert(type(initial_status.pending_rpc_requests) == "number", "status should exp
 local health = require("codex.health")
 assert(health._executable({ "codex", "app-server" }) == "codex", "health should resolve table commands")
 assert(health._executable("codex app-server") == "codex", "health should resolve string commands")
+local app_server_supported, app_server_help = health._app_server_supported("codex")
+assert(app_server_supported, "health should detect codex app-server support: " .. tostring(app_server_help))
 health.check()
 
 local parser = require("codex.parser")
