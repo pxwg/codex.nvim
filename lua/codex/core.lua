@@ -23,10 +23,10 @@ local function extract_thread_id(params)
   if type(params) ~= "table" then
     return state.active_thread_id
   end
-  return params.threadId
-    or params.thread_id
-    or params.conversationId
-    or (type(params.thread) == "table" and params.thread.id)
+  return util.value(params.threadId)
+    or util.value(params.thread_id)
+    or util.value(params.conversationId)
+    or (type(params.thread) == "table" and util.value(params.thread.id))
     or state.active_thread_id
 end
 
@@ -38,6 +38,14 @@ end
 local function inspect_summary(value, limit)
   local ok, text = pcall(vim.inspect, value)
   return util.truncate(ok and text or tostring(value), limit or 160)
+end
+
+local function text_value(value)
+  value = util.value(value)
+  if value == nil then
+    return ""
+  end
+  return tostring(value)
 end
 
 local function append_timeline(method, params, title, state_value, text)
@@ -81,26 +89,29 @@ local function append_raw_event(method, params)
 end
 
 local function process_key(params)
-  return tostring(params.processId or params.processHandle or "process")
+  return tostring(util.value(params.processId) or util.value(params.processHandle) or "process")
 end
 
 local function decode_output_delta(params)
   if type(params) ~= "table" then
     return ""
   end
-  if params.delta and params.delta ~= "" then
-    return params.delta
+  local delta = util.value(params.delta)
+  if delta and delta ~= "" then
+    return tostring(delta)
   end
-  if not params.deltaBase64 or params.deltaBase64 == "" then
+  local delta_base64 = util.value(params.deltaBase64)
+  if not delta_base64 or delta_base64 == "" then
     return ""
   end
+  delta_base64 = tostring(delta_base64)
   if vim.base64 and vim.base64.decode then
-    local ok, decoded = pcall(vim.base64.decode, params.deltaBase64)
-    if ok then
-      return decoded
+    local ok, decoded = pcall(vim.base64.decode, delta_base64)
+    if ok and decoded ~= nil then
+      return tostring(decoded)
     end
   end
-  return "[base64 output: " .. util.truncate(params.deltaBase64, 80) .. "]"
+  return "[base64 output: " .. util.truncate(delta_base64, 80) .. "]"
 end
 
 local function process_output_block(method, params, tool_name)
@@ -119,7 +130,7 @@ local function process_output_block(method, params, tool_name)
       state = "running",
       input = {
         process = process_key(params),
-        stream = params.stream,
+        stream = util.value(params.stream),
       },
       output = "",
       metadata = { source = method },
@@ -133,7 +144,11 @@ local function process_output_block(method, params, tool_name)
 end
 
 local function append_field(item, field, delta)
-  item[field] = (item[field] or "") .. (delta or "")
+  delta = util.value(delta)
+  if delta == nil then
+    return
+  end
+  item[field] = text_value(item[field]) .. tostring(delta)
 end
 
 local function handle_thread(thread)
@@ -352,8 +367,8 @@ end
 handlers["item/reasoning/textDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.content = item.content or {}
-  local index = (params.contentIndex or 0) + 1
-  item.content[index] = (item.content[index] or "") .. (params.delta or "")
+  local index = (tonumber(util.value(params.contentIndex)) or 0) + 1
+  item.content[index] = text_value(item.content[index]) .. text_value(params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
   schedule(params.threadId)
 end
@@ -361,7 +376,7 @@ end
 handlers["item/reasoning/summaryTextDelta"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
-  item.summary[1] = (item.summary[1] or "") .. (params.delta or "")
+  item.summary[1] = text_value(item.summary[1]) .. text_value(params.delta)
   set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
   schedule(params.threadId)
 end
@@ -369,7 +384,7 @@ end
 handlers["item/reasoning/summaryPartAdded"] = function(params)
   local item = state.ensure_item(params.threadId, params.turnId, params.itemId, "reasoning")
   item.summary = item.summary or {}
-  table.insert(item.summary, params.text or "")
+  table.insert(item.summary, text_value(params.text))
   set_generation(state.get_thread(params.threadId), "streaming", "Codex is reasoning...")
   schedule(params.threadId)
 end
@@ -391,8 +406,8 @@ end
 handlers["command/exec/outputDelta"] = function(params)
   local block, thread = process_output_block("command/exec/outputDelta", params, "command/exec")
   if block and thread then
-    block.output = (block.output or "") .. decode_output_delta(params)
-    block.state = params.capReached and "truncated" or "running"
+    block.output = text_value(block.output) .. decode_output_delta(params)
+    block.state = util.value(params.capReached) and "truncated" or "running"
     block.raw = params
     set_generation(thread, "tool_running", "Codex is streaming command output...")
     schedule(thread.id)
@@ -402,8 +417,8 @@ end
 handlers["process/outputDelta"] = function(params)
   local block, thread = process_output_block("process/outputDelta", params, "process/spawn")
   if block and thread then
-    block.output = (block.output or "") .. decode_output_delta(params)
-    block.state = params.capReached and "truncated" or "running"
+    block.output = text_value(block.output) .. decode_output_delta(params)
+    block.state = util.value(params.capReached) and "truncated" or "running"
     block.raw = params
     set_generation(thread, "tool_running", "Codex is streaming process output...")
     schedule(thread.id)
@@ -413,10 +428,12 @@ end
 handlers["process/exited"] = function(params)
   local block, thread = process_output_block("process/exited", params, "process/spawn")
   if block and thread then
-    local stdout = params.stdout and params.stdout ~= "" and ("\nstdout:\n" .. params.stdout) or ""
-    local stderr = params.stderr and params.stderr ~= "" and ("\nstderr:\n" .. params.stderr) or ""
+    local stdout_text = text_value(params.stdout)
+    local stderr_text = text_value(params.stderr)
+    local stdout = stdout_text ~= "" and ("\nstdout:\n" .. stdout_text) or ""
+    local stderr = stderr_text ~= "" and ("\nstderr:\n" .. stderr_text) or ""
     if stdout ~= "" or stderr ~= "" then
-      block.output = (block.output or "") .. stdout .. stderr
+      block.output = text_value(block.output) .. stdout .. stderr
     end
     block.state = "exit " .. tostring(params.exitCode)
     block.raw = params

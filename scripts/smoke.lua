@@ -125,6 +125,83 @@ assert(thread.view_state and thread.view_state[win], "prepare_submit_follow shou
 render.on_user_view_changed(thread, win, "cursor")
 
 local core = require("codex.core")
+
+local function assert_handles_notification(message, label)
+  local ok, err = pcall(core.handle_notification, message)
+  assert(ok, label .. ": " .. tostring(err))
+end
+
+local command_before = thread.items["tool-1"].aggregatedOutput
+assert_handles_notification({
+  method = "item/commandExecution/outputDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "tool-1",
+    delta = vim.NIL,
+  },
+}, "command output should ignore null delta")
+assert(thread.items["tool-1"].aggregatedOutput == command_before, "null command delta should not alter output")
+
+local reasoning_before = thread.items["reasoning-1"].content[1]
+local summary_before = thread.items["reasoning-1"].summary[1]
+assert_handles_notification({
+  method = "item/reasoning/textDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "reasoning-1",
+    contentIndex = vim.NIL,
+    delta = vim.NIL,
+  },
+}, "reasoning text should ignore null delta")
+assert_handles_notification({
+  method = "item/reasoning/summaryTextDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "reasoning-1",
+    delta = vim.NIL,
+  },
+}, "reasoning summary should ignore null delta")
+assert(thread.items["reasoning-1"].content[1] == reasoning_before, "null reasoning delta should not alter content")
+assert(thread.items["reasoning-1"].summary[1] == summary_before, "null summary delta should not alter content")
+assert_handles_notification({
+  method = "item/reasoning/summaryPartAdded",
+  params = {
+    threadId = "smoke-extmarks",
+    turnId = "turn-1",
+    itemId = "reasoning-1",
+    text = vim.NIL,
+  },
+}, "reasoning summary parts should accept null text")
+assert(type(thread.items["reasoning-1"].summary[#thread.items["reasoning-1"].summary]) == "string")
+
+assert_handles_notification({
+  method = "process/outputDelta",
+  params = {
+    threadId = "smoke-extmarks",
+    processHandle = "smoke-process-nil",
+    stream = vim.NIL,
+    delta = vim.NIL,
+    deltaBase64 = vim.NIL,
+    capReached = vim.NIL,
+  },
+}, "process output should ignore null delta")
+local nil_process_block = thread.process_blocks_by_id["process/spawn:smoke-process-nil"]
+assert(nil_process_block.output == "", "null process delta should not append output")
+assert(nil_process_block.state == "running", "null capReached should not mark output as truncated")
+assert_handles_notification({
+  method = "process/exited",
+  params = {
+    threadId = "smoke-extmarks",
+    processHandle = "smoke-process-nil",
+    stdout = vim.NIL,
+    stderr = vim.NIL,
+    exitCode = 0,
+  },
+}, "process exit should ignore null stdio")
+
 core.handle_notification({
   method = "model/rerouted",
   params = {
