@@ -228,7 +228,12 @@ function M.list_threads(callback)
         callback(result.data or {})
       else
         for _, thread in ipairs(result.data or {}) do
-          print(("%s  %s"):format(thread.id, thread.name or thread.preview or ""))
+          print(
+            ("%s  %s"):format(
+              tostring(util.value(thread.id) or ""),
+              util.value(thread.name) or util.value(thread.preview) or ""
+            )
+          )
         end
       end
     end)

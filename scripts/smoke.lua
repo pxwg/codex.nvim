@@ -16,6 +16,7 @@ require("codex.completion.blink").new():get_completions({
   done = true
 end)
 assert(done, "completion callback should run synchronously for static items")
+assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 
 local rpc_done = false
 require("codex.rpc").start(function(err)
