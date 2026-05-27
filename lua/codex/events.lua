@@ -331,13 +331,27 @@ function M.normalize_thread(thread)
   return blocks
 end
 
+local function pending_user_already_rendered(thread, prompt)
+  local normalized_prompt = util.trim(prompt or "")
+  if normalized_prompt == "" then
+    return false
+  end
+  for _, item_id in ipairs(thread.item_order or {}) do
+    local item = thread.items and thread.items[item_id]
+    if item and item.type == "userMessage" and util.trim(user_text(item.content)) == normalized_prompt then
+      return true
+    end
+  end
+  return false
+end
+
 function M.pending_blocks(thread)
   local blocks = {}
   local request = thread and thread.pending_request
   if not request then
     return blocks
   end
-  if request.prompt and request.prompt ~= "" then
+  if request.prompt and request.prompt ~= "" and not pending_user_already_rendered(thread, request.prompt) then
     table.insert(blocks, {
       type = "UserBlock",
       message_id = "__pending_user__",

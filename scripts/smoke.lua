@@ -50,6 +50,11 @@ state.upsert_item("smoke-extmarks", "turn-1", {
     { type = "text", text = "hello", text_elements = {} },
   },
 })
+thread.pending_request = { prompt = "hello", created_at = vim.uv.now() }
+assert(#require("codex.events").pending_blocks(thread) == 0, "pending user block should hide after userMessage echo")
+thread.pending_request = { prompt = "not echoed yet", created_at = vim.uv.now() }
+assert(#require("codex.events").pending_blocks(thread) == 1, "pending user block should render before userMessage echo")
+thread.pending_request = nil
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "reasoning-1",
   type = "reasoning",
