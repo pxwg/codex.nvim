@@ -262,6 +262,9 @@ local commands = {
   stop = function()
     M.stop()
   end,
+  detail = function()
+    require("codex.ui.detail").open()
+  end,
   health = function()
     M.health()
   end,

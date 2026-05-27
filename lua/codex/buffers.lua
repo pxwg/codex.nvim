@@ -50,6 +50,9 @@ local function configure_buffer(bufnr, thread_id)
   vim.keymap.set("n", "za", function()
     require("codex.ui.render").toggle_under_cursor()
   end, { buffer = bufnr, silent = true, desc = "Toggle Codex block" })
+  vim.keymap.set("n", "K", function()
+    require("codex.ui.detail").open()
+  end, { buffer = bufnr, silent = true, desc = "Open Codex block detail" })
 end
 
 local function prompt_start(bufnr)

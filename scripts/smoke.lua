@@ -70,5 +70,7 @@ local extmarks =
 assert(#extmarks > 0, "render should create extmarks")
 assert(#(thread.placeholder_marks or {}) >= 2, "reasoning and tool blocks should be placeholders")
 assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
+local detail_lines = require("codex.ui.detail").lines_for(thread.placeholder_marks[1].block)
+assert(table.concat(detail_lines, "\n"):match("# Reasoning"), "detail should render block title")
 
 require("codex.rpc").stop()
