@@ -431,10 +431,72 @@ function M.command(opts)
   command(args)
 end
 
-function M.complete_command()
+local function filtered(candidates, prefix)
+  prefix = prefix or ""
+  if prefix == "" then
+    return candidates
+  end
+  local out = {}
+  local lower = prefix:lower()
+  for _, candidate in ipairs(candidates) do
+    if tostring(candidate):lower():find("^" .. vim.pesc(lower)) then
+      table.insert(out, candidate)
+    end
+  end
+  return out
+end
+
+local function loaded_thread_ids()
+  local ids = vim.tbl_keys(state.threads)
+  table.sort(ids)
+  return ids
+end
+
+local function codex_buffer_ids()
+  local ids = { "all" }
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.b[bufnr].codex_thread_id ~= nil then
+      table.insert(ids, tostring(bufnr))
+    end
+  end
+  table.sort(ids, function(a, b)
+    if a == "all" then
+      return true
+    end
+    if b == "all" then
+      return false
+    end
+    return tonumber(a) < tonumber(b)
+  end)
+  return ids
+end
+
+local function command_args(line)
+  local rest = (line or ""):gsub("^%s*%S+%s*", "", 1)
+  return vim.split(rest, "%s+", { trimempty = true }), rest:match("%s$") ~= nil
+end
+
+function M.complete_command(arglead, line)
+  if line == nil then
+    line = arglead or ""
+    arglead = nil
+  end
+  local args, trailing_space = command_args(line)
   local names = vim.tbl_keys(commands)
   table.sort(names)
-  return names
+  if #args == 0 or (#args == 1 and not trailing_space) then
+    return filtered(names, arglead or args[1])
+  end
+
+  local command = args[1]
+  local value_prefix = trailing_space and "" or (arglead or args[#args])
+  if command == "attach" and #args <= 2 then
+    return filtered(codex_buffer_ids(), value_prefix)
+  end
+  if (command == "open" or command == "resume") and #args <= 2 then
+    return filtered(loaded_thread_ids(), value_prefix)
+  end
+  return {}
 end
 
 M._thread_start_params = thread_start_params

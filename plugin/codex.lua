@@ -7,7 +7,7 @@ vim.api.nvim_create_user_command("Codex", function(opts)
   require("codex").command(opts)
 end, {
   nargs = "*",
-  complete = function(_, line)
-    return require("codex").complete_command(line)
+  complete = function(arglead, line)
+    return require("codex").complete_command(arglead, line)
   end,
 })

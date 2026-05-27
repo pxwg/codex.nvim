@@ -22,6 +22,11 @@ assert(
 local initial_status = codex.status()
 assert(initial_status.server_running == false, "status should report stopped server before startup")
 assert(type(initial_status.pending_rpc_requests) == "number", "status should expose pending rpc count")
+assert(
+  vim.tbl_contains(codex.complete_command("sta", "Codex sta"), "status"),
+  "command completion should filter commands"
+)
+assert(vim.tbl_contains(codex.complete_command("", "Codex attach "), "all"), "attach completion should include all")
 local health = require("codex.health")
 assert(health._executable({ "codex", "app-server" }) == "codex", "health should resolve table commands")
 assert(health._executable("codex app-server") == "codex", "health should resolve string commands")
@@ -88,6 +93,17 @@ attached_buffers[context_thread_buf] = nil
 assert(codex.attach_buffer(context_thread_buf), "attach_buffer should attach a Codex buffer")
 assert(attached_buffers[context_thread_buf] == "smoke-context", "attach_buffer should rerun buffer.on_attach")
 assert(codex.attach_all_buffers() >= 1, "attach_all_buffers should find existing Codex buffers")
+assert(
+  vim.tbl_contains(
+    codex.complete_command(tostring(context_thread_buf), "Codex attach " .. context_thread_buf),
+    tostring(context_thread_buf)
+  ),
+  "attach completion should include Codex buffer numbers"
+)
+assert(
+  vim.tbl_contains(codex.complete_command("smoke", "Codex resume smoke"), "smoke-context"),
+  "resume completion should include loaded thread ids"
+)
 assert(
   buffer_opened_events[1] and buffer_opened_events[1].bufnr == context_thread_buf,
   "opening a Codex thread should emit CodexBufferOpened"

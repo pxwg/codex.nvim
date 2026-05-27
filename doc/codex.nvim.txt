@@ -122,6 +122,9 @@ buffer. Configure `buffer.on_attach = function(bufnr, payload) ... end` or
 `require("codex").on("buffer_attached", cb)` to attach editor-local helpers
 such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
+Command-line completion covers subcommands, `attach all`, loaded Codex buffer
+numbers, and loaded thread ids for `open`/`resume`.
+
 ==============================================================================
 HEALTH                                                   *codex.nvim-health*
 

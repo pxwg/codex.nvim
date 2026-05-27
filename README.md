@@ -130,6 +130,8 @@ Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submi
 
 `:Codex attach` reruns the configured Codex buffer attach hook for the current thread buffer. `:Codex attach all` reruns it for every loaded Codex thread buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("codex").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after codex.nvim creates the chat buffer.
 
+Command-line completion covers subcommands, `attach all`, loaded Codex buffer numbers, and loaded thread ids for `open`/`resume`.
+
 ## Health
 
 Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server stdio support, app-server command shape, `git` for `nvim.apply_patch`, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
