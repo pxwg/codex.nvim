@@ -1,7 +1,9 @@
 local config = require("codex.config")
 local context = require("codex.context")
+local hooks = require("codex.hooks")
 local render = require("codex.ui.render")
 local state = require("codex.state")
+local util = require("codex.util")
 local window = require("codex.ui.window")
 
 local M = {}
@@ -177,6 +179,51 @@ local function setup_buffer_autocmds(bufnr)
   })
 end
 
+local function is_codex_buffer(bufnr)
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return false
+  end
+  return vim.b[bufnr].codex_thread_id ~= nil or vim.api.nvim_buf_get_name(bufnr):match("^codex://thread/") ~= nil
+end
+
+function M.attach(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  if bufnr == 0 then
+    bufnr = vim.api.nvim_get_current_buf()
+  end
+  if not is_codex_buffer(bufnr) then
+    return false
+  end
+
+  local thread = state.thread_for_buf(bufnr)
+  local payload = {
+    bufnr = bufnr,
+    thread = thread,
+    thread_id = thread and thread.id or vim.b[bufnr].codex_thread_id,
+  }
+
+  local on_attach = config.get().buffer and config.get().buffer.on_attach
+  if type(on_attach) == "function" then
+    local ok, err = pcall(on_attach, bufnr, payload)
+    if not ok then
+      util.notify("codex.nvim buffer.on_attach failed: " .. tostring(err), vim.log.levels.ERROR)
+    end
+  end
+
+  hooks.emit("buffer_attached", payload)
+  return true
+end
+
+function M.attach_all()
+  local count = 0
+  for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+    if is_codex_buffer(bufnr) and M.attach(bufnr) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 function M.collect_prompt(bufnr)
   bufnr = bufnr or vim.api.nvim_get_current_buf()
   local start = prompt_start(bufnr)
@@ -231,6 +278,13 @@ function M.open(thread_id)
   local winid = window.open(bufnr)
   state.set_buffer(thread_id, bufnr, winid)
   M.apply_window_options(winid, bufnr)
+  M.attach(bufnr)
+  hooks.emit("buffer_opened", {
+    bufnr = bufnr,
+    winid = winid,
+    thread = state.get_thread(thread_id),
+    thread_id = thread_id,
+  })
   local start = prompt_start(bufnr)
   local line_count = vim.api.nvim_buf_line_count(bufnr)
   vim.api.nvim_win_set_cursor(winid, { math.min(math.max(1, start + 1), line_count), 0 })

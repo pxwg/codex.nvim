@@ -2,6 +2,17 @@ local M = {}
 
 local listeners = {}
 
+local function autocmd_patterns(event)
+  local legacy = "Codex" .. event:gsub("^%l", string.upper)
+  local camel = "Codex" .. event:gsub("(^%l)", string.upper):gsub("_(%l)", function(char)
+    return char:upper()
+  end)
+  if camel == legacy then
+    return { legacy }
+  end
+  return { camel, legacy }
+end
+
 function M.on(event, callback)
   listeners[event] = listeners[event] or {}
   table.insert(listeners[event], callback)
@@ -24,10 +35,12 @@ function M.emit(event, payload)
       end)
     end
   end
-  vim.api.nvim_exec_autocmds("User", {
-    pattern = "Codex" .. event:gsub("^%l", string.upper),
-    data = payload,
-  })
+  for _, pattern in ipairs(autocmd_patterns(event)) do
+    vim.api.nvim_exec_autocmds("User", {
+      pattern = pattern,
+      data = payload,
+    })
+  end
 end
 
 return M

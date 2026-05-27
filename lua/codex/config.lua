@@ -18,6 +18,9 @@ local defaults = {
     personality = nil,
     ephemeral = false,
   },
+  buffer = {
+    on_attach = nil,
+  },
   ui = {
     layout = "float",
     width = 0.82,

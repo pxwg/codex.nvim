@@ -3,6 +3,7 @@ local M = {}
 local buffers = require("codex.buffers")
 local config = require("codex.config")
 local core = require("codex.core")
+local hooks = require("codex.hooks")
 local parser = require("codex.parser")
 local rpc = require("codex.rpc")
 local state = require("codex.state")
@@ -358,6 +359,18 @@ function M.restart()
   M.health()
 end
 
+function M.attach_buffer(bufnr)
+  return buffers.attach(bufnr)
+end
+
+function M.attach_all_buffers()
+  return buffers.attach_all()
+end
+
+function M.on(event, callback)
+  return hooks.on(event, callback)
+end
+
 local commands = {
   new = function(args)
     M.new_thread({ prompt = table.concat(args, " ") })
@@ -391,6 +404,18 @@ local commands = {
   end,
   restart = function()
     M.restart()
+  end,
+  attach = function(args)
+    local target = args[1]
+    if target == "all" then
+      local count = M.attach_all_buffers()
+      util.notify(("attached %d Codex buffer%s"):format(count, count == 1 and "" or "s"))
+      return
+    end
+    local bufnr = tonumber(target) or vim.api.nvim_get_current_buf()
+    if not M.attach_buffer(bufnr) then
+      util.notify("current buffer is not a Codex thread buffer", vim.log.levels.WARN)
+    end
   end,
 }
 

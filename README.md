@@ -75,6 +75,9 @@ require("codex").setup({
     personality = nil,
     ephemeral = false,
   },
+  buffer = {
+    on_attach = nil,
+  },
   ui = {
     layout = "float",
     width = 0.82,
@@ -118,11 +121,14 @@ require("codex").setup({
 :Codex health
 :Codex status
 :Codex restart
+:Codex attach [all]
 ```
 
 Inside a Codex thread buffer, write below `## Prompt` and press `<C-s>` to submit. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, windows near the prompt keep following the composer; scrolling away suspends that follow state for the window.
 
 `:Codex status` reports whether app-server is running, current and active thread ids, pending request counts, and the current thread generation/status. The same data is available programmatically through `require("codex").status()` for statuslines or custom integrations.
+
+`:Codex attach` reruns the configured Codex buffer attach hook for the current thread buffer. `:Codex attach all` reruns it for every loaded Codex thread buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("codex").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after codex.nvim creates the chat buffer.
 
 ## Health
 
@@ -171,6 +177,15 @@ Review keys:
 - `q`: close the review window without answering
 
 The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval. When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread developer instructions that ask Codex to prefer `nvim.apply_patch` for workspace edits while preserving any user-provided developer instructions.
+
+## Events
+
+`codex.nvim` emits `User` autocmds for editor integrations:
+
+- `CodexBufferAttached`: after the Codex buffer attach hook point runs for a thread buffer. `event.data` includes `bufnr`, `thread_id`, and `thread`.
+- `CodexBufferOpened`: after a thread buffer is opened in a window. `event.data` includes `bufnr`, `winid`, `thread_id`, and `thread`.
+- `CodexThreadOpened`: when app-server reports a thread start.
+- `CodexGenerationCompleted`: when app-server reports a completed generation.
 
 ## Architecture
 

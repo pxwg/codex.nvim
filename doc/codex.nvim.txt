@@ -11,7 +11,8 @@ CONTENTS                                                        *codex.nvim*
 6. Patch review                                  |codex.nvim-patch-review|
 7. TUI rendering                                 |codex.nvim-tui|
 8. blink.cmp                                     |codex.nvim-blink|
-9. Lua API                                       |codex.nvim-api|
+9. Events                                        |codex.nvim-events|
+10. Lua API                                      |codex.nvim-api|
 
 ==============================================================================
 OVERVIEW                                               *codex.nvim-overview*
@@ -60,6 +61,9 @@ Default options:
       personality = nil,
       ephemeral = false,
     },
+    buffer = {
+      on_attach = nil,
+    },
     ui = {
       layout = "float",
       width = 0.82,
@@ -105,11 +109,18 @@ COMMANDS                                               *codex.nvim-commands*
   :Codex health
   :Codex status
   :Codex restart
+  :Codex attach [all]
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
 `:Codex status` reports app-server state, active/current thread ids, pending
 request counts, and the current thread generation/status.
+
+`:Codex attach` reruns the configured Codex buffer attach hook for the current
+thread buffer. `:Codex attach all` reruns it for every loaded Codex thread
+buffer. Configure `buffer.on_attach = function(bufnr, payload) ... end` or
+`require("codex").on("buffer_attached", cb)` to attach editor-local helpers
+such as input-method LSP clients, formula concealers, or buffer-local keymaps.
 
 ==============================================================================
 HEALTH                                                   *codex.nvim-health*
@@ -258,6 +269,31 @@ Example blink.cmp configuration:
 <
 
 ==============================================================================
+EVENTS                                                  *codex.nvim-events*
+
+codex.nvim emits User autocmds for editor integrations:
+>
+  CodexBufferAttached
+<
+    Fired after the Codex buffer attach hook point runs for a thread buffer.
+    `event.data` includes `bufnr`, `thread_id`, and `thread`.
+>
+  CodexBufferOpened
+<
+    Fired after a thread buffer is opened in a window. `event.data` includes
+    `bufnr`, `winid`, `thread_id`, and `thread`.
+>
+  CodexThreadOpened
+<
+    Fired when app-server reports a thread start.
+>
+  CodexGenerationCompleted
+<
+    Fired when app-server reports a completed generation.
+
+Legacy snake_case User patterns are still emitted for compatibility.
+
+==============================================================================
 LUA API                                                  *codex.nvim-api*
 
                                                         *codex.setup()*
@@ -307,5 +343,17 @@ health()~
                                                         *codex.status()*
 status()~
     Return lightweight runtime state for statuslines and integrations.
+
+                                                        *codex.attach_buffer()*
+attach_buffer({bufnr})~
+    Rerun `buffer.on_attach` and `buffer_attached` hooks for a Codex buffer.
+
+                                                        *codex.attach_all_buffers()*
+attach_all_buffers()~
+    Rerun Codex buffer attach hooks for every loaded Codex thread buffer.
+
+                                                        *codex.on()*
+on({event}, {callback})~
+    Register a Lua hook. Returns a function that removes the listener.
 
 vim:tw=78:ts=8:ft=help:norl:

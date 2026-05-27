@@ -49,6 +49,25 @@ local skill_parsed = parser.parse("$skill:smoke")
 assert(skill_parsed[1] and skill_parsed[1].type == "skill", "$skill should expand to a skill input")
 
 local buffers = require("codex.buffers")
+local buffer_opened_events = {}
+local attached_buffers = {}
+local buffer_attached_events = {}
+codex.on("buffer_attached", function(payload)
+  table.insert(buffer_attached_events, payload)
+end)
+codex.setup({
+  buffer = {
+    on_attach = function(bufnr, payload)
+      attached_buffers[bufnr] = payload.thread_id
+    end,
+  },
+})
+vim.api.nvim_create_autocmd("User", {
+  pattern = "CodexBufferOpened",
+  callback = function(event)
+    table.insert(buffer_opened_events, event.data)
+  end,
+})
 local source_buf = vim.api.nvim_create_buf(true, false)
 vim.api.nvim_buf_set_name(source_buf, "/tmp/codex-context-smoke.lua")
 vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, {
@@ -60,6 +79,23 @@ vim.api.nvim_set_current_buf(source_buf)
 vim.api.nvim_win_set_cursor(0, { 2, 7 })
 local context_thread_buf = buffers.open("smoke-context")
 assert(vim.api.nvim_get_current_buf() == context_thread_buf, "opening a Codex thread should focus its buffer")
+assert(attached_buffers[context_thread_buf] == "smoke-context", "buffer.on_attach should run for Codex buffers")
+assert(
+  buffer_attached_events[1] and buffer_attached_events[1].bufnr == context_thread_buf,
+  "opening a Codex thread should emit buffer_attached hooks"
+)
+attached_buffers[context_thread_buf] = nil
+assert(codex.attach_buffer(context_thread_buf), "attach_buffer should attach a Codex buffer")
+assert(attached_buffers[context_thread_buf] == "smoke-context", "attach_buffer should rerun buffer.on_attach")
+assert(codex.attach_all_buffers() >= 1, "attach_all_buffers should find existing Codex buffers")
+assert(
+  buffer_opened_events[1] and buffer_opened_events[1].bufnr == context_thread_buf,
+  "opening a Codex thread should emit CodexBufferOpened"
+)
+assert(
+  buffer_opened_events[1] and buffer_opened_events[1].thread_id == "smoke-context",
+  "CodexBufferOpened should include the thread id"
+)
 local codex_buffer_context = parser.parse("@buffer")
 local codex_context_text = codex_buffer_context[1] and codex_buffer_context[1].text or ""
 assert(codex_context_text:match("Neovim context: target buffer"), "@buffer should describe the target buffer")
