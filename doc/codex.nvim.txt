@@ -1,0 +1,200 @@
+*codex.nvim.txt*        Neovim client for Codex app-server
+
+==============================================================================
+CONTENTS                                                        *codex.nvim*
+
+1. Overview                                      |codex.nvim-overview|
+2. Setup                                         |codex.nvim-setup|
+3. Commands                                      |codex.nvim-commands|
+4. Prompt tokens                                 |codex.nvim-prompt-tokens|
+5. Patch review                                  |codex.nvim-patch-review|
+6. blink.cmp                                     |codex.nvim-blink|
+7. Lua API                                       |codex.nvim-api|
+
+==============================================================================
+OVERVIEW                                               *codex.nvim-overview*
+
+codex.nvim runs `codex app-server --listen stdio://` and presents Codex
+threads as Neovim buffers. A thread buffer is named:
+>
+  codex://thread/<thread-id>
+<
+
+The transcript is rendered above a `## Prompt` section. Type below that prompt
+section and press CTRL-S to submit.
+
+File edit approvals are shown as patch proposals in a Neovim review window.
+
+==============================================================================
+SETUP                                                     *codex.nvim-setup*
+
+Minimal setup:
+>
+  require("codex").setup()
+<
+
+Default options:
+>
+  require("codex").setup({
+    app_server = {
+      command = { "codex", "app-server", "--listen", "stdio://" },
+      initialize_timeout_ms = 10000,
+    },
+    thread = {
+      model = nil,
+      model_provider = nil,
+      service_tier = nil,
+      approval_policy = "on-request",
+      approvals_reviewer = "user",
+      sandbox = "workspace-write",
+      permissions = nil,
+      developer_instructions = nil,
+      base_instructions = nil,
+      personality = nil,
+      ephemeral = false,
+    },
+    ui = {
+      layout = "float",
+      width = 0.82,
+      height = 0.82,
+      sidebar_width = 0.42,
+      render_delay_ms = 35,
+      auto_scroll = true,
+    },
+    completion = {
+      enabled = true,
+      ttl_ms = 30000,
+    },
+    dynamic_tools = {
+      enabled = true,
+    },
+  })
+<
+
+==============================================================================
+COMMANDS                                               *codex.nvim-commands*
+
+                                                        *:Codex*
+>
+  :Codex new [initial prompt]
+  :Codex open [thread-id]
+  :Codex resume <thread-id>
+  :Codex pick
+  :Codex list
+  :Codex submit
+  :Codex stop
+  :Codex health
+  :Codex restart
+<
+
+`pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
+
+==============================================================================
+PROMPT TOKENS                                    *codex.nvim-prompt-tokens*
+
+The blink source and parser recognize these prompt token families:
+>
+  /new
+  /pick
+  /resume
+  /stop
+  /submit
+
+  $model:<id>
+  $skill:<name>
+  $reasoning:low
+  $reasoning:medium
+  $reasoning:high
+
+  @file:
+  @buffer
+  @diagnostics
+
+  >buffer
+  >selection
+  >diagnostics
+  >quickfix
+<
+
+`>buffer`, `>diagnostics`, and `>quickfix` are expanded into additional text
+inputs. `$skill:<name>` becomes a Codex skill input when the skill is present in
+the local skill catalog.
+
+==============================================================================
+PATCH REVIEW                                      *codex.nvim-patch-review*
+
+Codex app-server file-change approvals are normalized into a patch proposal.
+The review window supports:
+>
+  a     accept
+  A     accept for session
+  d     decline
+  c     cancel
+  q     close window without answering
+<
+
+Modern app-server requests use `item/fileChange/requestApproval`. Legacy
+`applyPatchApproval` requests are supported as a fallback.
+
+==============================================================================
+BLINK.CMP                                             *codex.nvim-blink*
+
+Example blink.cmp configuration:
+>
+  require("blink.cmp").setup({
+    sources = {
+      default = { "lsp", "path", "snippets", "buffer", "codex" },
+      providers = {
+        codex = {
+          name = "Codex",
+          module = "codex.completion.blink",
+        },
+      },
+    },
+  })
+<
+
+==============================================================================
+LUA API                                                  *codex.nvim-api*
+
+                                                        *codex.setup()*
+setup({opts})~
+    Configure codex.nvim.
+
+                                                        *codex.new_thread()*
+new_thread({opts})~
+    Start a Codex thread and open its buffer.
+
+                                                        *codex.open()*
+open({thread_id})~
+    Open a loaded thread or read a thread by id.
+
+                                                        *codex.resume()*
+resume({thread_id})~
+    Resume a thread by id.
+
+                                                        *codex.submit()*
+submit()~
+    Submit the current Codex buffer prompt.
+
+                                                        *codex.submit_text()*
+submit_text({text}, {thread_id})~
+    Submit text to a thread.
+
+                                                        *codex.stop()*
+stop()~
+    Interrupt the active turn.
+
+                                                        *codex.list_threads()*
+list_threads({callback})~
+    List threads for the current workspace.
+
+                                                        *codex.pick_thread()*
+pick_thread()~
+    Pick and resume a thread.
+
+                                                        *codex.health()*
+health()~
+    Start app-server if necessary and report whether it initialized.
+
+vim:tw=78:ts=8:ft=help:norl:
