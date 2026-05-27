@@ -10,6 +10,7 @@ M.handlers = {}
 M.stdout_tail = ""
 M.stderr_tail = ""
 M.initialized = false
+M.stopping = false
 
 local function encode(value)
   return vim.json.encode(value)
@@ -137,11 +138,13 @@ function M.start(callback)
       M.pending = {}
       M.job_id = nil
       M.initialized = false
+      local stopping = M.stopping
+      M.stopping = false
       schedule(function()
         for _, entry in pairs(pending) do
           entry.callback({ code = code, message = "codex app-server exited" }, nil)
         end
-        if code ~= 0 then
+        if code ~= 0 and not stopping then
           util.notify("codex app-server exited with code " .. tostring(code), vim.log.levels.ERROR)
         end
       end)
@@ -187,6 +190,7 @@ end
 
 function M.stop()
   if M.is_running() then
+    M.stopping = true
     vim.fn.jobstop(M.job_id)
   end
   M.job_id = nil
