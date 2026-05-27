@@ -28,6 +28,10 @@ local function expected_exit(code, stopping)
   return stopping or code == 0 or code == 15 or code == 143
 end
 
+local function expected_send_failure(err)
+  return tostring(err or ""):match("closed stream") ~= nil
+end
+
 function M.set_handlers(handlers)
   M.handlers = handlers or {}
 end
@@ -249,7 +253,7 @@ function M.notify(method, params)
     message.params = params
   end
   local ok, err = pcall(M.send, message)
-  if not ok and not M.stopping then
+  if not ok and not M.stopping and not expected_send_failure(err) then
     util.notify("codex app-server notify failed: " .. tostring(err), vim.log.levels.ERROR)
   end
   return ok
