@@ -24,6 +24,10 @@ local function schedule(fn)
   vim.schedule(fn)
 end
 
+local function expected_exit(code, stopping)
+  return stopping or code == 0 or code == 15 or code == 143
+end
+
 function M.set_handlers(handlers)
   M.handlers = handlers or {}
 end
@@ -141,10 +145,13 @@ function M.start(callback)
       local stopping = M.stopping
       M.stopping = false
       schedule(function()
-        for _, entry in pairs(pending) do
-          entry.callback({ code = code, message = "codex app-server exited" }, nil)
+        local expected = expected_exit(code, stopping)
+        if not expected then
+          for _, entry in pairs(pending) do
+            entry.callback({ code = code, message = "codex app-server exited" }, nil)
+          end
         end
-        if code ~= 0 and not stopping then
+        if code ~= 0 and not expected then
           util.notify("codex app-server exited with code " .. tostring(code), vim.log.levels.ERROR)
         end
       end)
@@ -178,6 +185,9 @@ function M.start(callback)
       else
         util.notify("codex initialize failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
       end
+      return
+    end
+    if M.stopping or not M.is_running() then
       return
     end
     M.initialized = true
@@ -229,13 +239,20 @@ function M.request(method, params, callback)
 end
 
 function M.notify(method, params)
+  if M.stopping or not M.is_running() then
+    return false
+  end
   local message = {
     method = method,
   }
   if params ~= nil then
     message.params = params
   end
-  M.send(message)
+  local ok, err = pcall(M.send, message)
+  if not ok and not M.stopping then
+    util.notify("codex app-server notify failed: " .. tostring(err), vim.log.levels.ERROR)
+  end
+  return ok
 end
 
 function M.respond(id, result)

@@ -14,6 +14,12 @@ local function setup_once()
   if not did_setup then
     config.setup()
     core.setup()
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+      group = vim.api.nvim_create_augroup("CodexNvimLifecycle", { clear = true }),
+      callback = function()
+        rpc.stop()
+      end,
+    })
     did_setup = true
   end
 end
