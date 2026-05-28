@@ -331,15 +331,69 @@ function M.normalize_thread(thread)
   return blocks
 end
 
-local function pending_user_already_rendered(thread, prompt)
-  local normalized_prompt = util.trim(prompt or "")
-  if normalized_prompt == "" then
+local function append_candidate(candidates, value)
+  local text = util.trim(value or "")
+  if text == "" then
+    return
+  end
+  for _, candidate in ipairs(candidates) do
+    if candidate == text then
+      return
+    end
+  end
+  table.insert(candidates, text)
+end
+
+local function pending_text(request)
+  if type(request) ~= "table" then
+    return ""
+  end
+  if type(request.input) == "table" then
+    local text = user_text(request.input)
+    if text ~= "" then
+      return text
+    end
+  end
+  return request.prompt or ""
+end
+
+local function pending_display_text(request)
+  if type(request) ~= "table" then
+    return ""
+  end
+  if request.prompt and request.prompt ~= "" then
+    return request.prompt
+  end
+  return pending_text(request)
+end
+
+local function pending_candidates(request)
+  local candidates = {}
+  append_candidate(candidates, pending_text(request))
+  append_candidate(candidates, request and request.prompt)
+  return candidates
+end
+
+local function pending_turn_id(thread, request)
+  if type(request) == "table" and request.turn_id then
+    return request.turn_id
+  end
+  return thread and thread.active_turn_id or nil
+end
+
+local function pending_user_already_rendered(thread, request)
+  local candidates = pending_candidates(request)
+  local turn_id = pending_turn_id(thread, request)
+  if #candidates == 0 or not turn_id then
     return false
   end
   for _, item_id in ipairs(thread.item_order or {}) do
     local item = thread.items and thread.items[item_id]
-    if item and item.type == "userMessage" and util.trim(user_text(item.content)) == normalized_prompt then
-      return true
+    if item and item.type == "userMessage" and thread.item_turns and thread.item_turns[item_id] == turn_id then
+      local item_text = util.trim(user_text(item.content))
+      if vim.tbl_contains(candidates, item_text) then
+        return true
+      end
     end
   end
   return false
@@ -351,11 +405,12 @@ function M.pending_blocks(thread)
   if not request then
     return blocks
   end
-  if request.prompt and request.prompt ~= "" and not pending_user_already_rendered(thread, request.prompt) then
+  local text = pending_display_text(request)
+  if text ~= "" and not pending_user_already_rendered(thread, request) then
     table.insert(blocks, {
       type = "UserBlock",
       message_id = "__pending_user__",
-      text = request.prompt,
+      text = text,
       state = "submitted",
       local_only = true,
       raw = request,
@@ -363,5 +418,10 @@ function M.pending_blocks(thread)
   end
   return blocks
 end
+
+M._pending_text = pending_text
+M._pending_display_text = pending_display_text
+M._pending_candidates = pending_candidates
+M._pending_turn_id = pending_turn_id
 
 return M

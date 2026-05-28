@@ -304,6 +304,7 @@ local thread = state.ensure_thread("smoke-extmarks", {
   cwd = vim.fn.getcwd(),
   generation = "tool_running",
 })
+local events = require("codex.events")
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "user-1",
   type = "userMessage",
@@ -312,10 +313,64 @@ state.upsert_item("smoke-extmarks", "turn-1", {
   },
 })
 thread.pending_request = { prompt = "hello", created_at = vim.uv.now() }
-assert(#require("codex.events").pending_blocks(thread) == 0, "pending user block should hide after userMessage echo")
+thread.active_turn_id = "turn-1"
+assert(#events.pending_blocks(thread) == 0, "pending user block should hide after userMessage echo")
+thread.active_turn_id = "turn-2"
+thread.pending_request = { prompt = "hello", created_at = vim.uv.now() }
+assert(#events.pending_blocks(thread) == 1, "pending user block should not hide behind earlier turns")
 thread.pending_request = { prompt = "not echoed yet", created_at = vim.uv.now() }
-assert(#require("codex.events").pending_blocks(thread) == 1, "pending user block should render before userMessage echo")
+assert(#events.pending_blocks(thread) == 1, "pending user block should render before userMessage echo")
 thread.pending_request = nil
+thread.active_turn_id = nil
+local asset_prompt = "@image:`" .. image_asset .. "`\n\ninspect image"
+local asset_input = parser.parse(asset_prompt)
+local asset_pending_thread = state.ensure_thread("smoke-pending-asset", {
+  title = "Smoke pending asset",
+  cwd = vim.fn.getcwd(),
+})
+asset_pending_thread.active_turn_id = "turn-asset"
+asset_pending_thread.pending_request = { prompt = asset_prompt, input = asset_input, created_at = vim.uv.now() }
+state.upsert_item("smoke-pending-asset", "turn-old", {
+  id = "user-old-asset",
+  type = "userMessage",
+  content = asset_input,
+})
+local asset_pending_blocks = events.pending_blocks(asset_pending_thread)
+assert(#asset_pending_blocks == 1, "pending asset prompt should render before userMessage echo")
+assert(asset_pending_blocks[1].text:match("@image:"), "pending asset prompt should preserve raw provider syntax")
+assert(
+  events._pending_text(asset_pending_thread.pending_request):match("%[local image%]"),
+  "pending asset prompt should compute canonical image text"
+)
+assert(
+  #events._pending_candidates(asset_pending_thread.pending_request) == 2,
+  "pending asset prompt should keep raw and canonical candidates"
+)
+state.upsert_item("smoke-pending-asset", "turn-asset", {
+  id = "user-asset",
+  type = "userMessage",
+  content = asset_input,
+})
+assert(
+  #events.pending_blocks(asset_pending_thread) == 0,
+  "pending asset prompt should hide after canonical userMessage echo"
+)
+local core_pending_thread = state.ensure_thread("smoke-core-pending", {
+  title = "Smoke core pending",
+  cwd = vim.fn.getcwd(),
+})
+core_pending_thread.pending_request = { prompt = "core pending", created_at = vim.uv.now() }
+require("codex.core").handle_notification({
+  method = "turn/started",
+  params = {
+    threadId = "smoke-core-pending",
+    turn = { id = "turn-core", items = {} },
+  },
+})
+assert(
+  core_pending_thread.pending_request.turn_id == "turn-core",
+  "turn/started should bind pending requests to the active turn"
+)
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "reasoning-1",
   type = "reasoning",

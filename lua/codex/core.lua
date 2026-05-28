@@ -287,6 +287,9 @@ handlers["turn/started"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
   thread.active_turn_id = params.turn.id
+  if thread.pending_request then
+    thread.pending_request.turn_id = params.turn.id
+  end
   set_generation(thread, "submitted", "Codex is thinking...")
   schedule(params.threadId)
 end
