@@ -35,7 +35,7 @@ local commands = {
   { name = "logout", detail = "Sign out of Codex", category = "account" },
   { name = "mcp", detail = "List configured MCP tools", category = "tools" },
   { name = "mention", detail = "Attach a file to the conversation", category = "context" },
-  { name = "model", detail = "Choose the active model", category = "settings" },
+  { name = "model", detail = "Choose the active model and thinking effort", category = "settings" },
   { name = "fast", detail = "Toggle the current model's Fast tier", category = "settings" },
   { name = "reasoning", detail = "Choose reasoning effort and summary", category = "settings" },
   { name = "plan", detail = "Switch to plan mode and optionally send a prompt", category = "mode" },
@@ -84,7 +84,7 @@ local return_forms = {
   logout = "notify(account/logout)",
   mcp = "page(mcpServerStatus/list)",
   mention = "notify(use @file:/@image:)",
-  model = "select(model/list) -> notify(thread/settings/update)",
+  model = "select(model/list) -> select(supported thinking effort) -> notify(thread/settings/update)",
   fast = "select(model/list service tiers) -> notify(thread/settings/update)",
   reasoning = "select(local reasoning effort + summary) -> notify(thread/settings/update)",
   plan = "notify(unsupported in codex.nvim)",
@@ -433,13 +433,19 @@ local function apply_thread_settings(thread_id, params, message, actions)
   end)
 end
 
-local function set_model_thread(model, actions, thread_id)
+local function set_model_thread(model, actions, thread_id, effort_choice)
   local cfg = current_cfg()
   local model_name = model.model or model.id
   cfg.model = model_name
   cfg.service_tier = is_nil(model.defaultServiceTier) and nil or model.defaultServiceTier
   local params = { model = model_name, serviceTier = cfg.service_tier or vim.NIL }
-  apply_thread_settings(thread_id, params, "model set to " .. tostring(model_name), actions)
+  local message = "model set to " .. tostring(model_name)
+  if effort_choice then
+    cfg.reasoning_effort = is_nil(effort_choice.value) and nil or effort_choice.value
+    params.effort = cfg.reasoning_effort or vim.NIL
+    message = message .. " with effort " .. setting_value(cfg.reasoning_effort)
+  end
+  apply_thread_settings(thread_id, params, message, actions)
 end
 
 local function model_label(model)
@@ -488,6 +494,45 @@ local function request_models(actions, callback)
   end)
 end
 
+local function reasoning_effort_options(model)
+  local supported = as_table(field(model, "supportedReasoningEfforts"))
+  if #supported == 0 then
+    return {}
+  end
+  local choices = {}
+  local default_effort = text_or_nil(field(model, "defaultReasoningEffort"))
+  table.insert(choices, {
+    label = default_effort and ("default (" .. default_effort .. ")") or "default",
+    value = vim.NIL,
+    description = "Use the model default thinking effort",
+  })
+  local seen = {}
+  for _, option in ipairs(supported) do
+    local value = option.reasoningEffort or option.reasoning_effort or option.effort or option.value
+    if not is_nil(value) then
+      value = tostring(value)
+      if not seen[value] then
+        seen[value] = true
+        table.insert(choices, {
+          label = value,
+          value = value,
+          description = text_or_nil(option.description),
+        })
+      end
+    end
+  end
+  return choices
+end
+
+local function reasoning_effort_label(choice)
+  local label = text(choice.label)
+  local description = text_or_nil(choice.description)
+  if description then
+    label = label .. " - " .. description
+  end
+  return label
+end
+
 local function open_model(actions, thread_id)
   request_models(actions, function(models)
     present_result(select_result({
@@ -496,7 +541,19 @@ local function open_model(actions, thread_id)
       items = models,
       format_item = model_label,
       on_select = function(model)
-        set_model_thread(model, actions, thread_id)
+        local efforts = reasoning_effort_options(model)
+        if #efforts == 0 then
+          set_model_thread(model, actions, thread_id)
+          return
+        end
+        return select_result({
+          title = "Codex thinking effort",
+          items = efforts,
+          format_item = reasoning_effort_label,
+          on_select = function(effort)
+            set_model_thread(model, actions, thread_id, effort)
+          end,
+        })
       end,
     }))
   end)

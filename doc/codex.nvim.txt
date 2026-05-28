@@ -178,7 +178,9 @@ form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter
 for Neovim rendering. Settings commands such as `/model`, `/fast`,
 `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental`
 open Neovim pickers backed by Codex app-server catalog responses where
-available and update the active thread where app-server supports it.
+available and update the active thread where app-server supports it. `/model`
+also offers the selected model's advertised thinking-effort choices when
+app-server returns them.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
 Codex inputs before the turn is sent. Argument providers use

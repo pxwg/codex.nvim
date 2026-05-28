@@ -359,6 +359,58 @@ slash.dispatch("/model", nil, {
 })
 rpc.request = original_rpc_request
 assert(model_list_requests == 1, "slash list pagination should treat vim.NIL nextCursor as absent")
+local model_select_prompts = {}
+local model_settings_update = nil
+vim.ui.select = function(items, opts, callback)
+  table.insert(model_select_prompts, opts.prompt)
+  if opts.prompt == "Codex model" then
+    callback(items[1])
+  elseif opts.prompt == "Codex thinking effort" then
+    callback(items[3])
+  else
+    callback(nil)
+  end
+end
+rpc.request = function(method, params, callback)
+  if method == "model/list" then
+    callback(nil, {
+      data = {
+        {
+          id = "gpt-5-codex",
+          model = "gpt-5-codex",
+          displayName = "GPT-5 Codex",
+          description = "Smoke model",
+          hidden = false,
+          defaultReasoningEffort = "medium",
+          supportedReasoningEfforts = {
+            { reasoningEffort = "medium", description = "Balanced thinking" },
+            { reasoningEffort = "high", description = "Deeper thinking" },
+          },
+          defaultServiceTier = vim.NIL,
+        },
+      },
+      nextCursor = vim.NIL,
+    })
+    return
+  end
+  assert(method == "thread/settings/update", "slash /model effort smoke should update thread settings")
+  model_settings_update = params
+  callback(nil, {})
+end
+slash.dispatch("/model", "thread-model-effort", {
+  ensure_server = function(callback)
+    callback()
+  end,
+})
+rpc.request = original_rpc_request
+vim.ui.select = original_ui_select
+assert(
+  vim.deep_equal(model_select_prompts, { "Codex model", "Codex thinking effort" }),
+  "slash /model should prompt for model-supported thinking effort"
+)
+assert(model_settings_update.threadId == "thread-model-effort", "slash /model should target the active thread")
+assert(model_settings_update.model == "gpt-5-codex", "slash /model should update the selected model")
+assert(model_settings_update.effort == "high", "slash /model should update the selected thinking effort")
 local permission_items = {}
 vim.ui.select = function(items, opts, callback)
   for _, item in ipairs(items) do
