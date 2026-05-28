@@ -10,17 +10,31 @@ local system_result
 
 local function apply_patch_protocol_text()
   return table.concat({
-    "Review a Codex apply_patch edit in Neovim and apply it only after user approval.",
-    "Submit patches using the native Codex apply_patch format: *** Begin Patch, file operation headers, hunks, and *** End Patch.",
-    "File references in Codex apply_patch format must be relative to the working directory.",
-    "Prefer small, focused patches with one logical edit per call.",
+    "Use nvim.apply_patch as the Neovim-backed equivalent of Codex's native apply_patch tool in pair mode.",
+    "Put the patch text directly in arguments.patch; do not include shell commands, prose, or markdown fences.",
+    "Patch syntax must match the native Codex apply_patch format:",
+    "*** Begin Patch",
+    "*** Add File: <relative/path>",
+    "+<new file line>",
+    "*** Update File: <relative/path>",
+    "*** Move to: <relative/new/path>",
+    "@@",
+    " <context line>",
+    "-<removed line>",
+    "+<added line>",
+    "*** Delete File: <relative/path>",
+    "*** End Patch",
+    "For Add File, prefix every file content line with +. For Update File, use enough space-prefixed context lines plus - removed and + added lines to apply cleanly. For renames, put Move to immediately after Update File.",
+    "Use paths relative to arguments.cwd or the thread working directory; never use absolute paths or paths that escape the working directory.",
+    "Prefer small, focused patches with one logical edit per call; include multiple file operations only when they belong to the same change.",
     "Before patching, read the current buffer or relevant current file content and build the patch from that exact content.",
-    "If a patch fails, re-read the current buffer or file before trying again.",
-    "Do not repeatedly retry failed patches against stale context.",
+    "If a patch fails, re-read the current buffer or file before trying again. Do not repeatedly retry failed patches against stale context.",
+    "nvim.apply_patch preserves codex.nvim pair features: it verifies native patches in a temporary copy, opens Neovim hunk review, returns user hunk feedback and nvim.diagnostics, and writes only through Neovim.",
     "Treat returned nvim.diagnostics, user hunk feedback, and stale-context retry guidance as pair-coding feedback for the next edit.",
     "Continue by fixing reported diagnostics, incorporating rejection feedback, or re-reading current content before retrying stale patches; handle errors and warnings before reporting completion, address hints when practical, and explain intentional or false-positive leftovers.",
     "If this tool reports that Neovim auto-apply is enabled for the current session, keep using nvim.apply_patch; it will skip interactive hunk review and apply through Neovim.",
-  }, " ")
+    "Legacy unified diffs are accepted when git is available, but native apply_patch syntax is preferred.",
+  }, "\n")
 end
 
 local function stale_patch_retry_message()
@@ -83,7 +97,7 @@ local specs = {
       properties = {
         patch = {
           type = "string",
-          description = "Codex apply_patch patch text to review and apply. Legacy unified diffs are still accepted.",
+          description = "Native Codex apply_patch text to review and apply through Neovim. Start with *** Begin Patch and end with *** End Patch; legacy unified diffs are still accepted.",
         },
         cwd = {
           type = "string",

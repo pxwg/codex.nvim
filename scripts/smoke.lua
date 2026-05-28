@@ -50,6 +50,17 @@ assert(
   "nvim.apply_patch tool description should include native patch protocol"
 )
 assert(
+  dynamic_tools_for_config._apply_patch_protocol_text():match("directly in arguments%.patch")
+    and dynamic_tools_for_config._apply_patch_protocol_text():match("%*%*%* Add File:")
+    and dynamic_tools_for_config._apply_patch_protocol_text():match("%*%*%* Update File:")
+    and dynamic_tools_for_config._apply_patch_protocol_text():match("%*%*%* Delete File:"),
+  "nvim.apply_patch tool description should mirror native apply_patch usage"
+)
+assert(
+  dynamic_tools_for_config._apply_patch_protocol_text():match("writes only through Neovim"),
+  "nvim.apply_patch tool description should preserve Neovim-backed edit semantics"
+)
+assert(
   dynamic_tools_for_config._apply_patch_protocol_text():match("pair%-coding feedback"),
   "nvim.apply_patch tool description should frame returned feedback as edit guidance"
 )

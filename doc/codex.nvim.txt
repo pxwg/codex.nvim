@@ -258,12 +258,15 @@ as virtual lines, and writes only after hunks are resolved. Legacy unified diffs
 are still accepted when `git` is available.
 
 `edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes
-`nvim.apply_patch` and adds harness instructions requiring Codex's native
-`apply_patch` format with small, focused patches, preferably one logical edit
-per call. The agent is told to read the current buffer or relevant current file
-content before patching, build the patch from exact current content, use
-relative file paths, and re-read the buffer before retrying any failed patch. It
-must not call native `apply_patch` directly; pair mode declines native
+`nvim.apply_patch` as the Neovim-backed equivalent of Codex's native
+`apply_patch` tool and adds harness instructions that mirror the native patch
+grammar: put patch text directly in `arguments.patch`, start with
+`*** Begin Patch`, use relative `*** Add File`, `*** Update File`,
+`*** Delete File`, and optional `*** Move to` headers, and end with
+`*** End Patch`. The agent is told to prefer small, focused patches, read the
+current buffer or relevant current file content before patching, build the patch
+from exact current content, and re-read the buffer before retrying any failed
+patch. It must not call native `apply_patch` directly; pair mode declines native
 app-server file-change approvals. If Neovim auto-apply is enabled for a session,
 the agent still uses `nvim.apply_patch`, but codex.nvim skips interactive hunk
 review and applies through Neovim after verification.
