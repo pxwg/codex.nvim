@@ -261,7 +261,7 @@ end
 
 handlers["thread/settings/updated"] = function(params)
   local thread = state.ensure_thread(params.threadId)
-  thread.settings = params.settings or params
+  thread.settings = params.threadSettings or params.settings or params
   append_timeline(
     "thread/settings/updated",
     params,

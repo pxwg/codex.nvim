@@ -411,13 +411,14 @@ function M.kind_for_trigger(trigger, prefix)
   if trigger == "$" then
     return "skills"
   end
-  if trigger == "/" then
-    return "tools"
-  end
   return nil
 end
 
 function M.items_for_trigger(trigger, prefix, callback)
+  if trigger == "/" then
+    callback(require("codex.slash").items(prefix))
+    return
+  end
   local kind = M.kind_for_trigger(trigger, prefix)
   if not kind then
     if trigger == "@" then
@@ -428,11 +429,6 @@ function M.items_for_trigger(trigger, prefix, callback)
       end
     end
     callback(M.static_for_trigger(trigger))
-    return
-  end
-  if kind == "tools" and vim.startswith(prefix or "", "/nvim") then
-    callback(M.dynamic("tools"))
-    M.ensure_refresh("tools")
     return
   end
   local current = cached(kind)

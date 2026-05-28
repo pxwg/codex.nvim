@@ -152,9 +152,10 @@ The blink source and parser recognize these prompt token families:
 >
   $skill:<name>
 
-  /server/tool
-  /app:<id>
-  /nvim/<tool>
+  /model
+  /permissions
+  /mcp
+  /status
 
   @file:
   @image:
@@ -168,9 +169,16 @@ The blink source and parser recognize these prompt token families:
 <
 
 `$skill:<name>` candidates come from Codex app-server `skills/list`. `/...`
-candidates come from app-server tool inventory: `mcpServerStatus/list` for MCP
-tools, `app/list` for app connectors, and codex.nvim dynamic tool specs such
-as `/nvim/apply_patch`.
+candidates are CLI-style slash commands such as `/model`, `/permissions`,
+`/mcp`, and `/status`. Slash commands are handled by codex.nvim before
+`turn/start`, so they are not sent to the model as tool-call-like prompt text.
+Accepting a slash completion removes the typed prefix and opens that command's
+page or picker instead of inserting text. Each slash command declares a return
+form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter
+for Neovim rendering. Settings commands such as `/model`, `/fast`,
+`/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental`
+open Neovim pickers backed by Codex app-server catalog responses where
+available and update the active thread where app-server supports it.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
 Codex inputs before the turn is sent. Argument providers use

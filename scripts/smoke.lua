@@ -263,28 +263,141 @@ source:get_completions({
 end)
 assert(skill_done, "skill completion should run from cached official catalog")
 
-local tool_done = false
+local slash_done = false
 source:get_completions({
-  line = "/read",
-  cursor = { 1, 5 },
+  line = "/mo",
+  cursor = { 1, 3 },
 }, function(result)
-  assert(#result.items == 1 and result.items[1].label == "/smoke/read", "tool completion should use catalog cache")
-  tool_done = true
+  assert(
+    vim.tbl_contains(
+      vim.tbl_map(function(item)
+        return item.label
+      end, result.items),
+      "/model"
+    ),
+    "slash completion should return CLI command items"
+  )
+  slash_done = true
 end)
-assert(tool_done, "tool completion should run from cached official catalog")
+assert(slash_done, "slash completion should run from local command catalog")
 
 local nvim_tool_done = false
 source:get_completions({
   line = "/nvim/apply",
   cursor = { 1, 11 },
 }, function(result)
-  assert(
-    #result.items == 1 and result.items[1].label == "/nvim/apply_patch",
-    "tool completion should include Neovim tools"
-  )
+  assert(#result.items == 0, "slash completion should not expose Neovim dynamic tools")
   nvim_tool_done = true
 end)
-assert(nvim_tool_done, "Neovim tool completion should run from local dynamic tools")
+assert(nvim_tool_done, "slash completion should filter dynamic tool-looking prefixes")
+
+local slash = require("codex.slash")
+assert(slash.parse("/model").name == "model", "slash parser should parse command names")
+assert(slash.parse("/goal ship it").raw_args == "ship it", "slash parser should keep raw args")
+for _, command in ipairs(slash._commands) do
+  assert(slash._return_forms[command.name], "slash command should declare return form: " .. command.name)
+end
+local select_formatted = nil
+local original_ui_select = vim.ui.select
+vim.ui.select = function(items, opts, callback)
+  select_formatted = opts.format_item(items[1])
+  callback(nil)
+end
+slash._present_result({
+  kind = "select",
+  title = "Smoke",
+  items = { { label = "profile: smoke", detail = vim.NIL } },
+  format_item = function(item)
+    return item.label
+  end,
+})
+vim.ui.select = original_ui_select
+assert(select_formatted == "profile: smoke", "slash select presenter should stringify vim.NIL-safe labels")
+local rpc = require("codex.rpc")
+local original_rpc_request = rpc.request
+local model_list_requests = 0
+rpc.request = function(method, params, callback)
+  assert(method == "model/list", "slash /model smoke should request model/list")
+  model_list_requests = model_list_requests + 1
+  callback(nil, { data = {}, nextCursor = vim.NIL })
+end
+slash.dispatch("/model", nil, {
+  ensure_server = function(callback)
+    callback()
+  end,
+})
+rpc.request = original_rpc_request
+assert(model_list_requests == 1, "slash list pagination should treat vim.NIL nextCursor as absent")
+local permission_items = {}
+vim.ui.select = function(items, opts, callback)
+  for _, item in ipairs(items) do
+    table.insert(permission_items, opts.format_item(item))
+  end
+  callback(nil)
+end
+rpc.request = function(method, params, callback)
+  assert(method == "permissionProfile/list", "slash /permissions smoke should request permissionProfile/list")
+  callback(nil, { data = { { id = "smoke", description = vim.NIL } } })
+end
+slash.dispatch("/permissions", nil, {
+  ensure_server = function(callback)
+    callback()
+  end,
+})
+rpc.request = original_rpc_request
+vim.ui.select = original_ui_select
+assert(
+  vim.tbl_contains(permission_items, "profile: smoke - Codex permission profile"),
+  "slash /permissions should stringify vim.NIL profile descriptions"
+)
+local slash_new_prompt = nil
+assert(
+  slash.dispatch("/new start here", nil, {
+    new_thread = function(opts)
+      slash_new_prompt = opts.prompt
+    end,
+  }),
+  "slash dispatch should handle known commands locally"
+)
+assert(slash_new_prompt == "start here", "slash /new should call the local thread action")
+assert(slash._sandbox_policy("read-only").type == "readOnly", "slash sandbox helper should map app-server policy")
+
+local original_submit_text = codex.submit_text
+local executed_slash = nil
+local execute_default_new_text = nil
+local execute_done = false
+codex.submit_text = function(text)
+  executed_slash = text
+end
+source:execute({
+  bufnr = vim.api.nvim_get_current_buf(),
+}, {
+  label = "/model",
+  insertText = "/model",
+  textEdit = {
+    newText = "/model",
+    range = {
+      start = { line = 0, character = 0 },
+      ["end"] = { line = 0, character = 3 },
+    },
+  },
+  data = {
+    source = "codex.nvim.slash",
+    command = "model",
+  },
+}, function()
+  execute_done = true
+end, function(_, item)
+  execute_default_new_text = item.textEdit and item.textEdit.newText or item.insertText
+end)
+vim.wait(1000, function()
+  return executed_slash ~= nil and execute_done
+end, 20)
+codex.submit_text = original_submit_text
+assert(execute_default_new_text == "", "accepting slash completion should remove the typed slash prefix")
+assert(executed_slash == "/model", "accepting slash completion should execute the slash command")
+assert(execute_done, "slash completion execute should call blink callback")
+
 assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 
 local rpc = require("codex.rpc")

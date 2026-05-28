@@ -28,7 +28,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
   - `nvim.quickfix`
   - `nvim.apply_patch`
 - Source-buffer tracking so prompt context and Neovim tools target the buffer that opened the thread.
-- `blink.cmp` source where `$` and `/` come from Codex app-server skill/tool inventory and `@` expands Neovim context.
+- `blink.cmp` source where `$` comes from Codex app-server skills, `/` opens CLI-style slash commands, and `@` expands Neovim context.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
 
 ## Requirements
@@ -144,9 +144,7 @@ Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-s
 `codex.nvim` treats the chat buffer as the main UI surface. Prompt token completions are available through the `blink.cmp` source:
 
 - `$skill:<name>` from Codex app-server `skills/list`
-- `/server/tool` from Codex app-server `mcpServerStatus/list`
-- `/app:<id>` from Codex app-server `app/list`
-- `/nvim/<tool>` from codex.nvim dynamic tools, including `/nvim/apply_patch`
+- `/model`, `/permissions`, `/mcp`, `/status`, and other CLI-style slash commands handled by codex.nvim
 - `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@file:`, `@image:`
 
 Configure `blink.cmp` with:
@@ -172,7 +170,7 @@ require("blink.cmp").setup({
 @image:`assets/screenshot.png`
 ```
 
-The blink source completes paths after `@file:` and `@image:` using the same backtick form. When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
+The blink source completes paths after `@file:` and `@image:` using the same backtick form. When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Slash commands are handled locally before `turn/start`, so `/...` entries are not sent as model-visible tool calls; accepting a slash completion removes the typed prefix and opens that command's page or picker instead of inserting text. Each slash command declares a return form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter for Neovim rendering. Settings commands such as `/model`, `/fast`, `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental` open Neovim pickers backed by Codex app-server catalog responses where available and update the active thread where app-server supports it. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
 ## Patch Review
 
@@ -213,6 +211,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/codex/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
 - `lua/codex/ui/detail.lua`: scratch detail buffers for the block under cursor.
 - `lua/codex/patch_review.lua`: patch proposal review UI.
+- `lua/codex/slash.lua`: CLI-style slash command catalog, declared return forms, local dispatch, result presenter, and settings pickers.
 - `lua/codex/completion/blink.lua`: `blink.cmp` source.
 - `lua/codex/dynamic_tools.lua`: Neovim-backed dynamic tools.
 - `lua/codex/health.lua`: `:checkhealth codex` provider.

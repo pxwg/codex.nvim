@@ -84,6 +84,7 @@ local function thread_start_params(opts)
   opts = opts or {}
   local cfg = config.get().thread
   local cwd = opts.cwd or config.cwd()
+  local permissions = opts.permissions or cfg.permissions
   return {
     model = opts.model or cfg.model,
     modelProvider = opts.model_provider or cfg.model_provider,
@@ -92,13 +93,13 @@ local function thread_start_params(opts)
     runtimeWorkspaceRoots = { cwd },
     approvalPolicy = opts.approval_policy or cfg.approval_policy,
     approvalsReviewer = opts.approvals_reviewer or cfg.approvals_reviewer,
-    sandbox = opts.sandbox or cfg.sandbox,
-    permissions = opts.permissions or cfg.permissions,
+    sandbox = permissions and nil or (opts.sandbox or cfg.sandbox),
+    permissions = permissions,
     baseInstructions = opts.base_instructions or cfg.base_instructions,
     developerInstructions = compose_developer_instructions(opts.developer_instructions or cfg.developer_instructions),
     personality = opts.personality or cfg.personality,
     ephemeral = opts.ephemeral ~= nil and opts.ephemeral or cfg.ephemeral,
-    sessionStartSource = "startup",
+    sessionStartSource = opts.session_start_source or "startup",
     threadSource = "user",
     dynamicTools = require("codex.dynamic_tools").specs(),
     experimentalRawEvents = false,
@@ -106,9 +107,13 @@ local function thread_start_params(opts)
   }
 end
 
+local function sandbox_policy(mode)
+  return require("codex.slash")._sandbox_policy(mode)
+end
+
 local function turn_start_params(thread_id, input)
   local cfg = config.get().thread
-  return {
+  local params = {
     threadId = thread_id,
     input = input,
     cwd = config.cwd(),
@@ -117,7 +122,16 @@ local function turn_start_params(thread_id, input)
     approvalsReviewer = cfg.approvals_reviewer,
     model = cfg.model,
     serviceTier = cfg.service_tier,
+    effort = cfg.reasoning_effort,
+    summary = cfg.reasoning_summary,
+    personality = cfg.personality,
   }
+  if cfg.permissions then
+    params.permissions = cfg.permissions
+  else
+    params.sandboxPolicy = sandbox_policy(cfg.sandbox)
+  end
+  return params
 end
 
 function M.setup(opts)
@@ -190,6 +204,18 @@ function M.resume(thread_id)
 end
 
 function M.submit_text(text, thread_id)
+  if
+    require("codex.slash").dispatch(text, thread_id, {
+      ensure_server = ensure_server,
+      new_thread = M.new_thread,
+      resume = M.resume,
+      pick_thread = M.pick_thread,
+      show_status = M.show_status,
+      stop = M.stop,
+    })
+  then
+    return
+  end
   local input = parser.parse(text)
   if #input == 0 then
     return util.notify("prompt is empty", vim.log.levels.WARN)

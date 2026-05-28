@@ -45,6 +45,22 @@ local function to_item(item)
   }
 end
 
+local function slash_command(item)
+  if not (item.data and item.data.source == "codex.nvim.slash") then
+    return nil
+  end
+  return item.data.command or tostring(item.label or ""):gsub("^/", "")
+end
+
+local function empty_insert_item(item)
+  local out = vim.deepcopy(item)
+  if out.textEdit then
+    out.textEdit.newText = ""
+  end
+  out.insertText = ""
+  return out
+end
+
 local function item_matches(item, prefix)
   if item.data and item.data.source == "codex.nvim.context_path" then
     return true
@@ -67,6 +83,28 @@ local function item_matches(item, prefix)
     }, " ")
     :lower()
   return haystack:find(vim.pesc(query)) ~= nil
+end
+
+function Source:execute(ctx, item, callback, default_implementation)
+  local command = slash_command(item)
+  if not command or command == "" then
+    default_implementation()
+    callback()
+    return
+  end
+
+  default_implementation(ctx, empty_insert_item(item))
+  vim.schedule(function()
+    local bufnr = ctx and ctx.bufnr or vim.api.nvim_get_current_buf()
+    local thread_id = bufnr and vim.b[bufnr].codex_thread_id or nil
+    local ok, codex = pcall(require, "codex")
+    if ok and codex.submit_text then
+      codex.submit_text("/" .. command, thread_id)
+    else
+      require("codex.slash").dispatch("/" .. command, thread_id)
+    end
+    callback()
+  end)
 end
 
 function Source:get_completions(ctx, callback)
