@@ -21,7 +21,7 @@ local function prefix_at_cursor(ctx)
   local line = ctx.line or ""
   local cursor_col = ctx.cursor and ctx.cursor[2] or vim.api.nvim_win_get_cursor(0)[2]
   local before = line:sub(1, cursor_col)
-  return before:match("([/@$][%w%-%._:%/%~]*)$")
+  return before:match("(@[%w%-%._/]+:`[^`]*$)") or before:match("([/@$][%w%-%._:%/%~`]*)$")
 end
 
 local function completion_kind()
@@ -36,7 +36,7 @@ local function to_item(item)
   local kinds = completion_kind()
   return {
     label = item.label,
-    insertText = item.label,
+    insertText = item.insertText or item.label,
     kind = item.kind or kinds.Keyword or 14,
     detail = item.detail,
     documentation = item.documentation,
@@ -46,6 +46,9 @@ local function to_item(item)
 end
 
 local function item_matches(item, prefix)
+  if item.data and item.data.source == "codex.nvim.context_path" then
+    return true
+  end
   local label = tostring(item.label or "")
   local lower = prefix:lower()
   if vim.startswith(label:lower(), lower) then

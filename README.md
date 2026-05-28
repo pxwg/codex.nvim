@@ -144,7 +144,7 @@ Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-s
 - `/server/tool` from Codex app-server `mcpServerStatus/list`
 - `/app:<id>` from Codex app-server `app/list`
 - `/nvim/<tool>` from codex.nvim dynamic tools, including `/nvim/apply_patch`
-- `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@file:`
+- `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@file:`, `@image:`
 
 Configure `blink.cmp` with:
 
@@ -162,7 +162,14 @@ require("blink.cmp").setup({
 })
 ```
 
-`@...` tokens are expanded by Neovim into extra Codex text inputs. When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
+`@...` tokens are expanded by Neovim into extra Codex inputs. Argument providers use `@provider:input`; paths with spaces can wrap the path in backticks:
+
+```text
+@file:`path with spaces.lua`
+@image:`assets/screenshot.png`
+```
+
+The blink source completes paths after `@file:` and `@image:` using the same backtick form. When a thread is opened from another window, `codex.nvim` remembers that source buffer as the thread target, so `@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read the chat buffer itself. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to a Codex skill input using the skill metadata returned by app-server. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
 ## Patch Review
 

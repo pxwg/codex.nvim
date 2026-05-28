@@ -52,6 +52,22 @@ local buffer_context = parser.parse("@buffer")
 assert(buffer_context[1] and buffer_context[1].text:match("bufnr:"), "@buffer should include Neovim buffer metadata")
 local skill_parsed = parser.parse("$skill:smoke")
 assert(skill_parsed[1] and skill_parsed[1].type == "skill", "$skill should expand to a skill input")
+local asset_dir = vim.fn.tempname()
+vim.fn.mkdir(asset_dir, "p")
+local text_asset = vim.fs.joinpath(asset_dir, "space file.txt")
+local image_asset = vim.fs.joinpath(asset_dir, "sample image.png")
+vim.fn.writefile({ "text asset with spaces" }, text_asset)
+vim.fn.writefile({ "fake png" }, image_asset)
+local file_asset_parsed = parser.parse("@file:`" .. text_asset .. "`")
+assert(
+  file_asset_parsed[1] and file_asset_parsed[1].text:match("text asset with spaces"),
+  "@file should accept backtick-quoted paths with spaces"
+)
+local image_asset_parsed = parser.parse("@image:`" .. image_asset .. "`")
+assert(image_asset_parsed[1] and image_asset_parsed[1].type == "localImage", "@image should attach local images")
+assert(image_asset_parsed[1].path == vim.fs.normalize(image_asset), "@image should normalize local image paths")
+local remote_image_parsed = parser.parse("@image:https://example.com/smoke.png")
+assert(remote_image_parsed[1] and remote_image_parsed[1].type == "image", "@image should attach image URLs")
 
 local buffers = require("codex.buffers")
 local buffer_opened_events = {}
@@ -190,6 +206,32 @@ source:get_completions({
   done = true
 end)
 assert(done, "completion callback should run synchronously for Neovim context items")
+
+local path_done = false
+local file_completion_line = "@file:`" .. asset_dir .. "/space"
+source:get_completions({
+  line = file_completion_line,
+  cursor = { 1, #file_completion_line },
+}, function(result)
+  assert(#result.items >= 1, "file path completion should return path candidates")
+  assert(result.items[1].label:match("^@file:`"), "file path completion should use backtick quoting")
+  path_done = true
+end)
+assert(path_done, "path completion callback should run synchronously")
+
+local image_path_done = false
+local image_completion_line = "@image:`" .. asset_dir .. "/sample"
+source:get_completions({
+  line = image_completion_line,
+  cursor = { 1, #image_completion_line },
+}, function(result)
+  assert(
+    #result.items == 1 and result.items[1].label:match("sample image%.png"),
+    "image completion should return image files"
+  )
+  image_path_done = true
+end)
+assert(image_path_done, "image path completion callback should run synchronously")
 
 local skill_done = false
 source:get_completions({

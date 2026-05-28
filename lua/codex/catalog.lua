@@ -14,8 +14,152 @@ local static = {
     { label = "@buffers", detail = "Attach the open buffer list" },
     { label = "@cwd", detail = "Attach Neovim cwd and project root" },
     { label = "@file:", detail = "Attach a file by path" },
+    { label = "@image:", detail = "Attach a local image by path or an image URL" },
   },
 }
+
+local path_contexts = {
+  file = true,
+  image = true,
+}
+
+local image_exts = {
+  bmp = true,
+  gif = true,
+  heic = true,
+  jpeg = true,
+  jpg = true,
+  png = true,
+  tif = true,
+  tiff = true,
+  webp = true,
+}
+
+local function trim(value)
+  return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function is_absolute_path(path)
+  return path:match("^/") ~= nil or path:match("^%a:[/\\]") ~= nil
+end
+
+local function path_arg_prefix(prefix)
+  local name, raw = tostring(prefix or ""):match("^@([%w_.%-/]+):(.*)$")
+  if not name or not path_contexts[name] then
+    return nil
+  end
+  raw = raw or ""
+  if vim.startswith(raw, "`") then
+    raw = raw:sub(2)
+    local close_index = raw:find("`", 1, true)
+    if close_index then
+      raw = raw:sub(1, close_index - 1)
+    end
+  end
+  return name, raw
+end
+
+local function split_completion_path(raw)
+  raw = trim(raw)
+  local expanded = vim.fn.expand(raw)
+  local dir_part = ""
+  local leaf = ""
+
+  if expanded == "" then
+    dir_part = ""
+  elseif expanded:sub(-1) == "/" then
+    dir_part = expanded:gsub("/+$", "")
+  else
+    dir_part = vim.fn.fnamemodify(expanded, ":h")
+    leaf = vim.fn.fnamemodify(expanded, ":t")
+    if dir_part == "." then
+      dir_part = ""
+    end
+  end
+
+  local scan_dir = dir_part
+  if scan_dir == "" then
+    scan_dir = config.cwd()
+  elseif not is_absolute_path(scan_dir) then
+    scan_dir = vim.fs.joinpath(config.cwd(), scan_dir)
+  end
+
+  return vim.fs.normalize(scan_dir), leaf, dir_part
+end
+
+local function display_path(dir_part, name)
+  if dir_part == "" or dir_part == "." then
+    return name
+  end
+  return dir_part:gsub("/+$", "") .. "/" .. name
+end
+
+local function quote_path(path)
+  return "`" .. path:gsub("`", "\\`") .. "`"
+end
+
+local function is_image_path(path)
+  local ext = path:match("%.([^./\\]+)$")
+  return ext and image_exts[ext:lower()] or false
+end
+
+local function scan_names(scan_dir)
+  local ok, names = pcall(vim.fn.readdir, scan_dir)
+  if not ok or type(names) ~= "table" then
+    return {}
+  end
+  table.sort(names, function(a, b)
+    return tostring(a):lower() < tostring(b):lower()
+  end)
+  return names
+end
+
+local function path_item(provider, path, is_dir)
+  local label = "@" .. provider .. ":" .. quote_path(path)
+  return {
+    label = label,
+    insertText = label,
+    detail = is_dir and "Directory" or (provider == "image" and "Image asset" or "File context"),
+    filterText = "@" .. provider .. ":" .. path,
+    data = {
+      source = "codex.nvim.context_path",
+      provider = provider,
+      path = path,
+      directory = is_dir,
+    },
+  }
+end
+
+function M.path_items(prefix)
+  local provider, raw = path_arg_prefix(prefix)
+  if not provider then
+    return nil
+  end
+
+  if raw:match("^https?://") then
+    return {}
+  end
+
+  local scan_dir, leaf, dir_part = split_completion_path(raw)
+  local items = {}
+  for _, name in ipairs(scan_names(scan_dir)) do
+    if leaf == "" or vim.startswith(name:lower(), leaf:lower()) then
+      local absolute = vim.fs.joinpath(scan_dir, name)
+      local is_dir = vim.fn.isdirectory(absolute) == 1
+      local path = display_path(dir_part, name)
+      if is_dir then
+        path = path .. "/"
+      end
+      if is_dir or provider ~= "image" or is_image_path(path) then
+        table.insert(items, path_item(provider, path, is_dir))
+      end
+      if #items >= 100 then
+        break
+      end
+    end
+  end
+  return items
+end
 
 local function cache_key(kind)
   return "catalog:" .. kind
@@ -276,6 +420,13 @@ end
 function M.items_for_trigger(trigger, prefix, callback)
   local kind = M.kind_for_trigger(trigger, prefix)
   if not kind then
+    if trigger == "@" then
+      local path_items = M.path_items(prefix)
+      if path_items then
+        callback(path_items)
+        return
+      end
+    end
     callback(M.static_for_trigger(trigger))
     return
   end

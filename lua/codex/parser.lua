@@ -5,6 +5,41 @@ local catalog = require("codex.catalog")
 local M = {}
 
 local context_handlers = {}
+local context_providers = {}
+
+local function trim(value)
+  return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function unquote_arg(value)
+  value = trim(value)
+  if #value >= 2 and value:sub(1, 1) == "`" and value:sub(-1) == "`" then
+    return value:sub(2, -2)
+  end
+  return value
+end
+
+local function is_absolute_path(path)
+  return path:match("^/") ~= nil or path:match("^%a:[/\\]") ~= nil
+end
+
+local function normalize_path(path)
+  path = vim.fn.expand(unquote_arg(path or ""))
+  if path == "" then
+    return nil
+  end
+  if not is_absolute_path(path) then
+    path = vim.fs.joinpath(config.cwd(), path)
+  end
+  return vim.fs.normalize(path)
+end
+
+local function text_input(text)
+  if not text or text == "" then
+    return nil
+  end
+  return { type = "text", text = text, text_elements = {} }
+end
 
 local function project_root()
   local cwd = vim.fn.getcwd()
@@ -136,8 +171,8 @@ context_handlers.cwd = function()
 end
 
 local function file_context(path)
-  path = vim.fn.expand(path or "")
-  if path == "" or vim.fn.filereadable(path) ~= 1 then
+  path = normalize_path(path)
+  if not path or vim.fn.filereadable(path) ~= 1 then
     return nil
   end
   local lines = vim.fn.readfile(path)
@@ -152,20 +187,94 @@ local function file_context(path)
   }, "\n")
 end
 
-local function expand_context_token(token)
-  if vim.startswith(token, "@file:") then
-    return file_context(token:sub(7))
-  end
-  local name = token:sub(2)
-  local handler = context_handlers[name]
-  if not handler then
+local function image_input(source)
+  source = unquote_arg(source)
+  if source == "" then
     return nil
   end
-  local ok, value = pcall(handler)
-  if ok and value and value ~= "" then
-    return value
+  if source:match("^https?://") then
+    return { type = "image", url = source }
+  end
+
+  local path = normalize_path(source)
+  if not path or vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+  return { type = "localImage", path = path }
+end
+
+context_providers.file = file_context
+context_providers.image = image_input
+
+local function parse_context_token(token)
+  token = trim(token)
+  if token:sub(1, 1) == ">" then
+    token = "@" .. token:sub(2)
+  end
+  if token:sub(1, 1) ~= "@" then
+    return nil
+  end
+
+  local body = token:sub(2)
+  local name, arg = body:match("^([%w_.%-/]+):(.*)$")
+  if name then
+    return { name = name, arg = arg, has_arg = true }
+  end
+
+  name = body:match("^([%w_.%-/]+)$")
+  if name then
+    return { name = name, has_arg = false }
   end
   return nil
+end
+
+local function normalize_context_result(value)
+  if type(value) == "string" then
+    local input = text_input(value)
+    return input and { input } or nil
+  end
+  if type(value) ~= "table" then
+    return nil
+  end
+  if value.type then
+    return { value }
+  end
+
+  local inputs = {}
+  for _, entry in ipairs(value) do
+    if type(entry) == "string" then
+      local input = text_input(entry)
+      if input then
+        table.insert(inputs, input)
+      end
+    elseif type(entry) == "table" and entry.type then
+      table.insert(inputs, entry)
+    end
+  end
+  return #inputs > 0 and inputs or nil
+end
+
+local function resolve_context_token(token)
+  local parsed = parse_context_token(token)
+  if not parsed then
+    return nil
+  end
+
+  local resolver = parsed.has_arg and context_providers[parsed.name] or context_handlers[parsed.name]
+  if not resolver then
+    return nil
+  end
+
+  local ok, value = pcall(resolver, parsed.arg)
+  return ok and normalize_context_result(value) or nil
+end
+
+local function prompt_token(line)
+  line = trim(line)
+  if line == "" then
+    return nil
+  end
+  return line:match("^([>@][%w_.%-/]+:.*)$") or line:match("^([>@][%w_.%-/]+)$") or line:match("^([%$][%w_./:~%-]+)$")
 end
 
 function M.parse(text)
@@ -174,12 +283,11 @@ function M.parse(text)
   local opts = config.get()
 
   for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
-    local token = line:match("^%s*(@file:.+)%s*$") or line:match("^%s*([%$>@][%w_./:~%-]+)%s*$")
+    local token = prompt_token(line)
     if token and (token:sub(1, 1) == "@" or token:sub(1, 1) == ">") then
-      local context_token = token:sub(1, 1) == ">" and ("@" .. token:sub(2)) or token
-      local value = expand_context_token(context_token)
-      if value and value ~= "" then
-        table.insert(inputs, { type = "text", text = value, text_elements = {} })
+      local context_inputs = resolve_context_token(token)
+      if context_inputs then
+        vim.list_extend(inputs, context_inputs)
       else
         table.insert(body, line)
       end
@@ -203,11 +311,14 @@ function M.parse(text)
     end
   end
 
-  local text_input = table.concat(body, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
-  if text_input ~= "" then
-    table.insert(inputs, 1, { type = "text", text = text_input, text_elements = {} })
+  local body_text = table.concat(body, "\n"):gsub("^%s+", ""):gsub("%s+$", "")
+  local input = text_input(body_text)
+  if input then
+    table.insert(inputs, 1, input)
   end
   return inputs
 end
+
+M._parse_context_token = parse_context_token
 
 return M

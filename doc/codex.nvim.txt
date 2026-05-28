@@ -151,6 +151,7 @@ The blink source and parser recognize these prompt token families:
   /nvim/<tool>
 
   @file:
+  @image:
   @buffer
   @selection
   @cursor
@@ -166,11 +167,18 @@ tools, `app/list` for app connectors, and codex.nvim dynamic tool specs such
 as `/nvim/apply_patch`.
 
 `@...` candidates are Neovim context shortcuts. They expand into additional
-text inputs before the turn is sent. When a thread is opened from another
-window, codex.nvim remembers that source buffer as the thread target, so
-`@buffer`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not read the
-chat buffer itself. `@buffer` includes buffer RPC metadata such as bufnr, path,
-filetype, line count, cursor, modified state, and buffer text.
+Codex inputs before the turn is sent. Argument providers use
+`@provider:input`; paths with spaces can wrap the path in backticks:
+>
+  @file:`path with spaces.lua`
+  @image:`assets/screenshot.png`
+<
+The blink source completes paths after `@file:` and `@image:` using that
+backtick form. When a thread is opened from another window, codex.nvim
+remembers that source buffer as the thread target, so `@buffer`, `@cursor`,
+`@diagnostics`, and Neovim dynamic tools do not read the chat buffer itself.
+`@buffer` includes buffer RPC metadata such as bufnr, path, filetype, line
+count, cursor, modified state, and buffer text.
 Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as context
 aliases, but new completions use `@`.
 
