@@ -20,6 +20,20 @@ local function decode(line)
   return vim.json.decode(line)
 end
 
+local function app_server_env()
+  local env = vim.fn.environ()
+  for key in pairs(env) do
+    if key:match("^MallocStackLogging") then
+      env[key] = nil
+    end
+  end
+  return env
+end
+
+local function sanitize_malloc_env_enabled(opts)
+  return not (opts.app_server and opts.app_server.sanitize_malloc_env == false)
+end
+
 local function schedule(fn)
   vim.schedule(fn)
 end
@@ -131,7 +145,7 @@ function M.start(callback)
   M.stderr_tail = ""
   M.initialized = false
 
-  M.job_id = vim.fn.jobstart(command, {
+  local job_opts = {
     stdin = "pipe",
     stdout_buffered = false,
     stderr_buffered = false,
@@ -160,7 +174,14 @@ function M.start(callback)
         end
       end)
     end,
-  })
+  }
+
+  if sanitize_malloc_env_enabled(opts) then
+    job_opts.clear_env = true
+    job_opts.env = app_server_env()
+  end
+
+  M.job_id = vim.fn.jobstart(command, job_opts)
 
   if M.job_id <= 0 then
     local err = "failed to start codex app-server"
@@ -273,5 +294,8 @@ function M.respond_error(id, message, code, data)
     },
   })
 end
+
+M._app_server_env = app_server_env
+M._sanitize_malloc_env_enabled = sanitize_malloc_env_enabled
 
 return M

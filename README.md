@@ -61,6 +61,7 @@ require("codex").setup({
   app_server = {
     command = { "codex", "app-server", "--listen", "stdio://" },
     initialize_timeout_ms = 10000,
+    sanitize_malloc_env = true,
   },
   thread = {
     model = nil,
@@ -106,6 +107,8 @@ require("codex").setup({
   },
 })
 ```
+
+On macOS, `sanitize_malloc_env` removes inherited `MallocStackLogging*` variables before spawning app-server. This avoids noisy malloc runtime messages from parent GUI environments; set it to `false` if you intentionally need those variables while debugging Codex.
 
 ## Commands
 

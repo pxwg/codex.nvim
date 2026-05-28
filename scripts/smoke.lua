@@ -267,8 +267,18 @@ end)
 assert(nvim_tool_done, "Neovim tool completion should run from local dynamic tools")
 assert(require("codex.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
 
+local rpc = require("codex.rpc")
+vim.env.MallocStackLogging = "0"
+vim.env.MallocStackLoggingNoCompact = "0"
+local app_server_env = rpc._app_server_env()
+assert(app_server_env.MallocStackLogging == nil, "rpc should strip MallocStackLogging from app-server env")
+assert(
+  app_server_env.MallocStackLoggingNoCompact == nil,
+  "rpc should strip MallocStackLoggingNoCompact from app-server env"
+)
+
 local rpc_done = false
-require("codex.rpc").start(function(err)
+rpc.start(function(err)
   assert(err == nil, err and err.message or "app-server should initialize")
   rpc_done = true
 end)

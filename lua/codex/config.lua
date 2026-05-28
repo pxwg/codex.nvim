@@ -4,6 +4,7 @@ local defaults = {
   app_server = {
     command = { "codex", "app-server", "--listen", "stdio://" },
     initialize_timeout_ms = 10000,
+    sanitize_malloc_env = true,
   },
   thread = {
     model = nil,
