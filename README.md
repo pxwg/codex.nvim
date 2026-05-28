@@ -215,7 +215,7 @@ In a `nvim.apply_patch` buffer review:
 - `<leader>cq`: cancel the review
 - `[c` / `]c`: jump between pending hunks
 
-Rejected hunk reasons, partial-apply status, final file state, and a final diff are returned to Codex as the dynamic tool result so the agent can continue from the user's feedback. In pair mode, codex.nvim preserves any user-provided developer instructions and appends the edit protocol as additional thread developer instructions.
+Rejected hunk reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to Codex as the dynamic tool result so the agent can continue from the user's feedback. In pair mode, codex.nvim preserves any user-provided developer instructions and appends the edit protocol as additional thread developer instructions.
 
 ## Events
 

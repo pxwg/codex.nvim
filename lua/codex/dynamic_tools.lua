@@ -123,17 +123,33 @@ handlers.current_buffer = function(_, thread)
   return text_response(("path: %s\nfiletype: %s\n\n%s"):format(name, vim.bo[bufnr].filetype, text))
 end
 
-handlers.diagnostics = function(_, thread)
+local function diagnostics_text(thread)
   local bufnr = context.target_buffer(thread)
   local diagnostics = vim.diagnostic.get(bufnr)
   if #diagnostics == 0 then
-    return text_response("No diagnostics in the target buffer.")
+    return "No diagnostics in the target buffer."
   end
   local lines = {}
   for _, diagnostic in ipairs(diagnostics) do
     table.insert(lines, ("L%d:C%d %s"):format(diagnostic.lnum + 1, diagnostic.col + 1, diagnostic.message))
   end
-  return text_response(table.concat(lines, "\n"))
+  return table.concat(lines, "\n")
+end
+
+local function diagnostics_section(thread)
+  local ok, text = pcall(diagnostics_text, thread)
+  if not ok then
+    text = "Diagnostics unavailable: " .. tostring(text)
+  end
+  return "## nvim.diagnostics\n" .. text
+end
+
+local function with_diagnostics(text, thread)
+  return tostring(text or "") .. "\n\n" .. diagnostics_section(thread)
+end
+
+handlers.diagnostics = function(_, thread)
+  return text_response(diagnostics_text(thread))
 end
 
 handlers.quickfix = function()
@@ -374,12 +390,15 @@ handlers.apply_patch = function(arguments, thread, message)
   arguments = normalize_arguments(arguments)
   local patch = arguments.patch or arguments.diff or arguments.unified_diff
   if type(patch) ~= "string" or util.trim(patch) == "" then
-    return text_response("nvim.apply_patch requires a unified diff in arguments.patch.", false)
+    return text_response(
+      with_diagnostics("nvim.apply_patch requires a unified diff in arguments.patch.", thread),
+      false
+    )
   end
 
   local params = message.params or {}
   if native_apply_patch_fallback_active(params, thread) then
-    return text_response(native_apply_patch_fallback_message(), false)
+    return text_response(with_diagnostics(native_apply_patch_fallback_message(), thread), false)
   end
 
   local rpc = require("codex.rpc")
@@ -392,7 +411,7 @@ handlers.apply_patch = function(arguments, thread, message)
       return
     end
     responded = true
-    rpc.respond(message.id, text_response(text, success))
+    rpc.respond(message.id, text_response(with_diagnostics(text, thread), success))
   end
 
   local valid, validation_message = validate_unified_patch(cwd, patch, changes)
@@ -470,6 +489,8 @@ M._native_apply_patch_fallback_message = native_apply_patch_fallback_message
 M._nvim_apply_patch_enabled = nvim_apply_patch_enabled
 M._apply_patch_protocol_text = apply_patch_protocol_text
 M._stale_patch_retry_message = stale_patch_retry_message
+M._diagnostics_text = diagnostics_text
+M._with_diagnostics = with_diagnostics
 M._text_response = text_response
 
 return M

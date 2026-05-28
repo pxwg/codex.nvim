@@ -442,6 +442,15 @@ local tool_patch = table.concat({
 }, "\n")
 local rpc = require("codex.rpc")
 local original_rpc_respond = rpc.respond
+local smoke_diag_ns = vim.api.nvim_create_namespace("codex-smoke-apply-patch-diagnostics")
+vim.diagnostic.set(smoke_diag_ns, source_buf, {
+  {
+    lnum = 0,
+    col = 6,
+    message = "smoke target diagnostic",
+    severity = vim.diagnostic.severity.WARN,
+  },
+}, {})
 local tool_response = nil
 rpc.respond = function(id, result)
   assert(id == "tool-apply-review", "dynamic tool should respond to the original request id")
@@ -471,6 +480,12 @@ assert(
   tool_response.contentItems[1].text:match("not this color"),
   "dynamic nvim.apply_patch response should include rejection feedback"
 )
+assert(
+  tool_response.contentItems[1].text:match("## nvim%.diagnostics")
+    and tool_response.contentItems[1].text:match("smoke target diagnostic"),
+  "dynamic nvim.apply_patch response should include target buffer diagnostics"
+)
+vim.diagnostic.reset(smoke_diag_ns, source_buf)
 assert(vim.fn.readfile(tool_file)[2] == "green", "dynamic patch rejection should preserve original file content")
 local fallback_thread = { id = "thread-fallback", active_turn_id = "turn-fallback" }
 local fallback_params = { threadId = "thread-fallback", turnId = "turn-fallback" }
