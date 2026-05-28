@@ -234,7 +234,7 @@ edits while preserving user-provided developer instructions.
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*
 
-The renderer follows the Alma-style TUI shape:
+The renderer follows a modern Neovim TUI shape:
 >
   Codex ThreadItem -> Codex block -> rendered buffer lines -> extmark UI
 <

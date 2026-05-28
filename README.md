@@ -15,7 +15,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 - Buffer-per-thread chat UI at `codex://thread/<id>`.
 - `:Codex new`, `:Codex pick`, `:Codex resume`, `:Codex submit`, and `:Codex stop`.
 - `:Codex status` and `require("codex").status()` for lightweight runtime state.
-- Alma-style TUI render: Codex items are normalized into blocks, then drawn with extmark headers, placeholders, virtual lines, stream gutters, composer token highlights, and a busy spinner.
+- Modern Neovim TUI render: Codex items are normalized into blocks, then drawn with extmark headers, placeholders, virtual lines, stream gutters, composer token highlights, and a busy spinner.
 - Streaming render for agent messages, reasoning, plans, command output, MCP calls, dynamic tool calls, collab-agent calls, web search, image events, and file changes.
 - Expandable reasoning/tool/agent/patch placeholders with `za`; detail scratch views with `K` or `:Codex detail`.
 - Prompt-anchor window following that keeps the composer stable while Codex streams, but suspends auto-follow when you scroll away.
@@ -205,7 +205,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/codex/state.lua`: thread, turn, item, pending-request, render-index, expansion, view, timeline/raw, and cache state.
 - `lua/codex/core.lua`: app-server notification and server-request reducer; maps Codex lifecycle events to UI generation states and timeline/raw blocks.
 - `lua/codex/context.lua`: source-buffer tracking for prompt context and Neovim dynamic tools.
-- `lua/codex/events.lua`: Codex `ThreadItem` to Alma-style block normalization.
+- `lua/codex/events.lua`: Codex `ThreadItem` to modern Neovim TUI block normalization.
 - `lua/codex/buffers.lua`: `codex://thread/<id>` buffers, window option management, prompt collection, and block keymaps.
 - `lua/codex/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, prompt-anchor follow, and foldexpr ranges.
 - `lua/codex/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
