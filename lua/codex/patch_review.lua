@@ -26,6 +26,49 @@ local function response_for(proposal, action)
   return { decision = decision }
 end
 
+local function object(value)
+  value = util.value(value)
+  return type(value) == "table" and value or {}
+end
+
+local function text(value)
+  value = util.value(value)
+  if value == nil or value == "" then
+    return nil
+  end
+  return tostring(value)
+end
+
+local function first_text(...)
+  for index = 1, select("#", ...) do
+    local value = text(select(index, ...))
+    if value then
+      return value
+    end
+  end
+end
+
+local function normalized_change(change)
+  change = object(change)
+  return {
+    kind = first_text(change.kind, change.type) or "update",
+    path = text(change.path) or "",
+    diff = first_text(change.diff, change.unified_diff, change.content) or "",
+  }
+end
+
+local function normalized_changes(changes)
+  changes = util.value(changes)
+  if type(changes) ~= "table" then
+    return {}
+  end
+  local normalized = {}
+  for _, change in ipairs(changes) do
+    table.insert(normalized, normalized_change(change))
+  end
+  return normalized
+end
+
 local function parse_hunk_header(line)
   local old_start, old_count, new_start, new_count = tostring(line or ""):match("^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@")
   if not old_start then
@@ -50,38 +93,44 @@ local function document_for(proposal)
 
   push("# Codex Patch Review")
   push("")
-  push("source: " .. proposal.source)
-  push("thread: " .. (proposal.thread_id or ""))
-  if proposal.turn_id then
-    push("turn: " .. proposal.turn_id)
+  local source = text(proposal.source) or "unknown"
+  push("source: " .. source)
+  push("thread: " .. (text(proposal.thread_id) or ""))
+  local turn_id = text(proposal.turn_id)
+  if turn_id then
+    push("turn: " .. turn_id)
   end
-  if proposal.item_id then
-    push("item: " .. proposal.item_id)
+  local item_id = text(proposal.item_id)
+  if item_id then
+    push("item: " .. item_id)
   end
-  if proposal.reason then
-    push("reason: " .. proposal.reason)
+  local reason = text(proposal.reason)
+  if reason then
+    push("reason: " .. reason)
   end
-  if proposal.grant_root then
-    push("grant root: " .. proposal.grant_root)
+  local grant_root = text(proposal.grant_root)
+  if grant_root then
+    push("grant root: " .. grant_root)
   end
   push("")
   local accept_session = "A accept for session"
-  if proposal.source == "nvim_apply_patch" then
+  if source == "nvim_apply_patch" then
     accept_session = "A use native apply_patch for this turn"
   end
   push(("Keys: a accept, %s, d decline, c cancel, [c/]c jump, <CR>/o open file, q close"):format(accept_session))
   push("")
   push("---")
 
-  if not proposal.changes or #proposal.changes == 0 then
+  local changes = normalized_changes(proposal.changes)
+  if #changes == 0 then
     push("")
     push("No patch details are available yet. The app-server request can still be declined or cancelled.")
     return lines, anchors
   end
 
-  for index, change in ipairs(proposal.changes) do
-    local kind = change.kind or change.type or "update"
-    local path = change.path or ""
+  for index, change in ipairs(changes) do
+    local kind = change.kind
+    local path = change.path
     push("")
     local file_lnum = push(("## %s %s"):format(kind, path))
     local file_anchor = {
@@ -91,7 +140,7 @@ local function document_for(proposal)
       path = path,
       kind = kind,
     }
-    local diff = change.diff or change.unified_diff or change.content or ""
+    local diff = change.diff
     if diff ~= "" then
       local hunk_count = 0
       push("```diff")
@@ -181,7 +230,7 @@ local function anchor_under_cursor(proposal)
 end
 
 local function absolute_path(proposal, path)
-  path = util.value(path)
+  path = text(path)
   if not path or path == "" then
     return nil
   end
@@ -189,11 +238,11 @@ local function absolute_path(proposal, path)
   if path:match("^/") or path:match("^%a:[/\\]") then
     return vim.fs.normalize(path)
   end
-  return vim.fs.normalize(vim.fs.joinpath(proposal.cwd or config.cwd(), path))
+  return vim.fs.normalize(vim.fs.joinpath(text(proposal.cwd) or config.cwd(), path))
 end
 
 local function target_window(proposal)
-  local thread = state.get_thread(proposal.thread_id)
+  local thread = state.get_thread(text(proposal.thread_id))
   local context_winid = thread and thread.context_winid
   if
     context_winid
@@ -344,43 +393,52 @@ function M.open(proposal)
 end
 
 local function modern_proposal(message)
-  local params = message.params or {}
-  local thread = state.get_thread(params.threadId)
-  local item = thread and thread.items[params.itemId] or nil
+  local params = object(message.params)
+  local thread_id = text(params.threadId)
+  local item_id = text(params.itemId)
+  local thread = state.get_thread(thread_id)
+  local item = thread and item_id and thread.items[item_id] or nil
   return {
     protocol = "modern",
     source = "codex_file_change",
     request_id = message.id,
-    thread_id = params.threadId,
-    turn_id = params.turnId,
-    item_id = params.itemId,
+    thread_id = thread_id,
+    turn_id = text(params.turnId),
+    item_id = item_id,
     cwd = thread and thread.cwd,
-    reason = params.reason,
-    grant_root = params.grantRoot,
-    changes = item and item.changes or {},
+    reason = text(params.reason),
+    grant_root = text(params.grantRoot),
+    changes = normalized_changes(item and item.changes),
   }
 end
 
 local function legacy_changes(file_changes)
   local changes = {}
-  for path, change in pairs(file_changes or {}) do
-    if change.type == "update" then
+  file_changes = util.value(file_changes)
+  if type(file_changes) ~= "table" then
+    return changes
+  end
+  for path, change in pairs(file_changes) do
+    change = object(change)
+    path = text(path) or ""
+    local change_type = text(change.type)
+    if change_type == "update" then
       table.insert(changes, {
         path = path,
         kind = "update",
-        diff = change.unified_diff,
+        diff = first_text(change.unified_diff, change.diff, change.content) or "",
       })
-    elseif change.type == "add" then
+    elseif change_type == "add" then
       table.insert(changes, {
         path = path,
         kind = "add",
-        diff = change.content,
+        diff = first_text(change.content, change.unified_diff, change.diff) or "",
       })
-    elseif change.type == "delete" then
+    elseif change_type == "delete" then
       table.insert(changes, {
         path = path,
         kind = "delete",
-        diff = change.content,
+        diff = first_text(change.content, change.unified_diff, change.diff) or "",
       })
     end
   end
@@ -388,16 +446,16 @@ local function legacy_changes(file_changes)
 end
 
 local function legacy_proposal(message)
-  local params = message.params or {}
+  local params = object(message.params)
   return {
     protocol = "legacy",
     source = "legacy_apply_patch",
     request_id = message.id,
-    thread_id = params.conversationId,
-    item_id = params.callId,
-    cwd = params.cwd,
-    reason = params.reason,
-    grant_root = params.grantRoot,
+    thread_id = text(params.conversationId),
+    item_id = text(params.callId),
+    cwd = text(params.cwd),
+    reason = text(params.reason),
+    grant_root = text(params.grantRoot),
     changes = legacy_changes(params.fileChanges),
   }
 end
@@ -409,8 +467,16 @@ function M.request_approval(message)
   else
     proposal = modern_proposal(message)
   end
+  local ok, bufnr = pcall(M.open, proposal)
+  if not ok then
+    local rpc = require("codex.rpc")
+    local responded = pcall(rpc.respond, proposal.request_id, response_for(proposal, "cancel"))
+    local suffix = responded and "approval cancelled" or "approval could not be cancelled"
+    util.notify("patch review failed: " .. tostring(bufnr) .. "; " .. suffix, vim.log.levels.ERROR)
+    return nil
+  end
   state.set_pending_request(message.id, proposal)
-  return M.open(proposal)
+  return bufnr
 end
 
 M._document = document_for

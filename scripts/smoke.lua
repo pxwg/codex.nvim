@@ -392,6 +392,21 @@ local review_proposal = {
 local review_lines, review_anchors = patch_review._document(review_proposal)
 assert(table.concat(review_lines, "\n"):match("%[c/%]c jump"), "patch review should document jump keys")
 assert(#review_anchors == 1 and review_anchors[1].old_start == 1, "patch review should index hunk anchors")
+local nil_review_lines = patch_review._document({
+  protocol = "modern",
+  source = "codex_file_change",
+  request_id = "smoke-nil-review-document",
+  thread_id = "smoke-context",
+  turn_id = vim.NIL,
+  item_id = vim.NIL,
+  reason = vim.NIL,
+  grant_root = vim.NIL,
+  changes = vim.NIL,
+})
+local nil_review_text = table.concat(nil_review_lines, "\n")
+assert(not nil_review_text:match("reason:"), "patch review should treat null reason as absent")
+assert(not nil_review_text:match("grant root:"), "patch review should treat null grantRoot as absent")
+assert(nil_review_text:match("No patch details"), "patch review should tolerate null changes")
 local review_buf = patch_review.open(review_proposal)
 assert(
   vim.b[review_buf].codex_patch_review_anchors[1].path == "codex-context-smoke.lua",
@@ -405,6 +420,75 @@ end
 if vim.api.nvim_buf_is_valid(review_buf) then
   vim.api.nvim_buf_delete(review_buf, { force = true })
 end
+state.upsert_item("smoke-context", "smoke-nil-turn", {
+  id = "smoke-nil-item",
+  changes = {
+    {
+      kind = vim.NIL,
+      path = "codex-context-smoke.lua",
+      diff = table.concat({
+        "--- a/codex-context-smoke.lua",
+        "+++ b/codex-context-smoke.lua",
+        "@@ -1,2 +1,3 @@",
+        " local codex_context_smoke = true",
+        "+local nil_review_anchor = true",
+        " return codex_context_smoke",
+      }, "\n"),
+    },
+  },
+})
+local nil_request_buf = patch_review.request_approval({
+  id = "smoke-nil-approval",
+  method = "item/fileChange/requestApproval",
+  params = {
+    threadId = "smoke-context",
+    turnId = vim.NIL,
+    itemId = "smoke-nil-item",
+    reason = vim.NIL,
+    grantRoot = vim.NIL,
+  },
+})
+assert(nil_request_buf and vim.api.nvim_buf_is_valid(nil_request_buf), "patch approval should open with null fields")
+local nil_request_text = table.concat(vim.api.nvim_buf_get_lines(nil_request_buf, 0, -1, false), "\n")
+assert(not nil_request_text:match("reason:"), "patch approval should omit null reason")
+assert(nil_request_text:match("## update codex%-context%-smoke%.lua"), "patch approval should normalize null kind")
+assert(state.pop_pending_request("smoke-nil-approval"), "patch approval should record pending request after opening")
+for _, winid in ipairs(vim.fn.win_findbuf(nil_request_buf)) do
+  if vim.api.nvim_win_is_valid(winid) then
+    vim.api.nvim_win_close(winid, true)
+  end
+end
+if vim.api.nvim_buf_is_valid(nil_request_buf) then
+  vim.api.nvim_buf_delete(nil_request_buf, { force = true })
+end
+local original_patch_review_open = patch_review.open
+local original_rpc_respond_for_failed_review = require("codex.rpc").respond
+local failed_review_response = nil
+require("codex.rpc").respond = function(id, result)
+  failed_review_response = { id = id, result = result }
+end
+patch_review.open = function()
+  error("smoke patch review failure")
+end
+local failed_review_buf = patch_review.request_approval({
+  id = "smoke-failed-approval",
+  method = "item/fileChange/requestApproval",
+  params = {
+    threadId = "smoke-context",
+    turnId = "smoke-nil-turn",
+    itemId = "smoke-nil-item",
+  },
+})
+patch_review.open = original_patch_review_open
+require("codex.rpc").respond = original_rpc_respond_for_failed_review
+assert(failed_review_buf == nil, "failed patch review should not return a buffer")
+assert(
+  failed_review_response
+    and failed_review_response.id == "smoke-failed-approval"
+    and failed_review_response.result.decision == "cancel",
+  "failed patch review should cancel the app-server approval"
+)
+assert(not state.pop_pending_request("smoke-failed-approval"), "failed patch review should not leave a pending request")
 local dynamic_tools = require("codex.dynamic_tools")
 local patch_dir = vim.fn.tempname()
 vim.fn.mkdir(patch_dir, "p")
