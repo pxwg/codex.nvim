@@ -195,6 +195,26 @@ assert(
   vim.fn.readfile(vim.fs.joinpath(patch_dir, "sample.txt"))[2] == "three",
   "nvim.apply_patch should apply approved patches"
 )
+local fallback_thread = { id = "thread-fallback", active_turn_id = "turn-fallback" }
+local fallback_params = { threadId = "thread-fallback", turnId = "turn-fallback" }
+assert(
+  not dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
+  "native apply_patch fallback should start disabled"
+)
+dynamic_tools._mark_native_apply_patch_fallback(fallback_params, fallback_thread)
+assert(
+  dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
+  "accept-for-session should enable native apply_patch fallback for the turn"
+)
+assert(
+  dynamic_tools._native_apply_patch_fallback_message():match("native `apply_patch`"),
+  "native apply_patch fallback message should tell Codex what tool to use"
+)
+dynamic_tools.clear_turn_state("thread-fallback", "turn-fallback")
+assert(
+  not dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
+  "turn cleanup should clear native apply_patch fallback"
+)
 
 local done = false
 local source = require("codex.completion.blink").new()
@@ -360,7 +380,8 @@ local core_pending_thread = state.ensure_thread("smoke-core-pending", {
   cwd = vim.fn.getcwd(),
 })
 core_pending_thread.pending_request = { prompt = "core pending", created_at = vim.uv.now() }
-require("codex.core").handle_notification({
+local core = require("codex.core")
+core.handle_notification({
   method = "turn/started",
   params = {
     threadId = "smoke-core-pending",
@@ -370,6 +391,25 @@ require("codex.core").handle_notification({
 assert(
   core_pending_thread.pending_request.turn_id == "turn-core",
   "turn/started should bind pending requests to the active turn"
+)
+dynamic_tools._mark_native_apply_patch_fallback(
+  { threadId = "smoke-core-pending", turnId = "turn-core" },
+  core_pending_thread
+)
+assert(
+  dynamic_tools._native_apply_patch_fallback_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
+  "native apply_patch fallback should be active before turn completion"
+)
+core.handle_notification({
+  method = "turn/completed",
+  params = {
+    threadId = "smoke-core-pending",
+    turn = { id = "turn-core", items = {} },
+  },
+})
+assert(
+  not dynamic_tools._native_apply_patch_fallback_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
+  "turn/completed should clear native apply_patch fallback"
 )
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "reasoning-1",

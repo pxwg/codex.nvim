@@ -308,6 +308,9 @@ end
 handlers["turn/completed"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
+  pcall(function()
+    require("codex.dynamic_tools").clear_turn_state(params.threadId, params.turn.id)
+  end)
   if thread.active_turn_id == params.turn.id then
     thread.active_turn_id = nil
   end

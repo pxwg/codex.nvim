@@ -4,6 +4,7 @@ local util = require("codex.util")
 
 local M = {}
 local async_response = {}
+local native_apply_patch_fallback = {}
 
 local function text_response(text, success)
   return {
@@ -278,6 +279,41 @@ local function apply_unified_patch(cwd, patch, changes)
   return true, "Patch applied by Neovim."
 end
 
+local function turn_id_for(params, thread)
+  return params.turnId or params.turn_id or (thread and thread.active_turn_id)
+end
+
+local function native_fallback_key(params, thread)
+  local thread_id = params.threadId or params.thread_id or (thread and thread.id)
+  local turn_id = turn_id_for(params, thread)
+  if not thread_id or not turn_id then
+    return nil
+  end
+  return tostring(thread_id) .. ":" .. tostring(turn_id)
+end
+
+local function mark_native_apply_patch_fallback(params, thread)
+  local key = native_fallback_key(params or {}, thread)
+  if key then
+    native_apply_patch_fallback[key] = true
+  end
+  return key
+end
+
+local function native_apply_patch_fallback_active(params, thread)
+  local key = native_fallback_key(params or {}, thread)
+  return key and native_apply_patch_fallback[key] == true
+end
+
+local function native_apply_patch_fallback_message()
+  return table.concat({
+    "User selected `A` in the Neovim patch review.",
+    "This patch was not applied by `nvim.apply_patch`.",
+    "For this turn, do not call `nvim.apply_patch` again; use the native `apply_patch` tool for this patch and any remaining edits.",
+    "No additional Neovim patch review is required for this turn.",
+  }, " ")
+end
+
 handlers.apply_patch = function(arguments, thread, message)
   arguments = normalize_arguments(arguments)
   local patch = arguments.patch or arguments.diff or arguments.unified_diff
@@ -286,6 +322,10 @@ handlers.apply_patch = function(arguments, thread, message)
   end
 
   local params = message.params or {}
+  if native_apply_patch_fallback_active(params, thread) then
+    return text_response(native_apply_patch_fallback_message(), false)
+  end
+
   local rpc = require("codex.rpc")
   local cwd = vim.fs.normalize(vim.fn.expand(arguments.cwd or (thread and thread.cwd) or config.cwd()))
   local changes = changes_from_unified_patch(patch)
@@ -308,9 +348,12 @@ handlers.apply_patch = function(arguments, thread, message)
     reason = arguments.reason,
     changes = changes,
     on_decision = function(action)
-      if action == "accept" or action == "accept_session" then
+      if action == "accept" then
         local ok, result = apply_unified_patch(cwd, patch, changes)
         respond(result, ok)
+      elseif action == "accept_session" then
+        mark_native_apply_patch_fallback(params, thread)
+        respond(native_apply_patch_fallback_message(), false)
       else
         respond("Patch " .. action .. " by user.", false)
       end
@@ -345,8 +388,18 @@ function M.handle_call(message)
   end
 end
 
+function M.clear_turn_state(thread_id, turn_id)
+  if not thread_id or not turn_id then
+    return
+  end
+  native_apply_patch_fallback[tostring(thread_id) .. ":" .. tostring(turn_id)] = nil
+end
+
 M._apply_unified_patch = apply_unified_patch
 M._changes_from_unified_patch = changes_from_unified_patch
+M._mark_native_apply_patch_fallback = mark_native_apply_patch_fallback
+M._native_apply_patch_fallback_active = native_apply_patch_fallback_active
+M._native_apply_patch_fallback_message = native_apply_patch_fallback_message
 M._text_response = text_response
 
 return M

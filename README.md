@@ -181,14 +181,14 @@ Codex app-server sends file edits as file-change approval requests. `codex.nvim`
 Review keys:
 
 - `a`: accept
-- `A`: accept for session
+- `A`: accept for session; for `nvim.apply_patch`, switch the current turn to native `apply_patch` fallback
 - `d`: decline
 - `c`: cancel
 - `[c` / `]c`: jump between indexed file changes or diff hunks
 - `<CR>` / `o`: open the related file at the hunk location when available
 - `q`: close the review window without answering
 
-The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval. When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread developer instructions that ask Codex to prefer `nvim.apply_patch` for workspace edits while preserving any user-provided developer instructions.
+The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval. The `nvim.apply_patch` dynamic tool uses the same review UI, but Neovim owns the final apply step: it refuses to overwrite modified loaded buffers, runs `git apply --check`, and applies only after approval. In a `nvim.apply_patch` review, `A` does not apply the patch in Neovim; it tells Codex to use native `apply_patch` for that patch and any remaining edits in the current turn, and later `nvim.apply_patch` calls in that turn return the same fallback instruction without opening another review. When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread developer instructions that ask Codex to prefer `nvim.apply_patch` for workspace edits while preserving any user-provided developer instructions.
 
 ## Events
 

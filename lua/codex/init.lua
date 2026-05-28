@@ -61,6 +61,7 @@ local function edit_tool_instruction()
   return table.concat({
     "When changing workspace files from codex.nvim, prefer the nvim.apply_patch dynamic tool for edits.",
     "Provide a unified diff in the tool's patch argument. Neovim will show the diff for user review and will only apply it after approval.",
+    "If nvim.apply_patch reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for the remaining edits in that turn.",
     "Use native file-change tools only when nvim.apply_patch is unavailable or unsuitable for the requested edit.",
   }, " ")
 end

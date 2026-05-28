@@ -195,7 +195,8 @@ Codex app-server file-change approvals are normalized into a patch proposal.
 The review window supports:
 >
   a     accept
-  A     accept for session
+  A     accept for session; for nvim.apply_patch, use native apply_patch for
+        the current turn
   d     decline
   c     cancel
   [c    jump to previous file change or diff hunk
@@ -212,10 +213,13 @@ Modern app-server requests use `item/fileChange/requestApproval`. Legacy
 `applyPatchApproval` requests are supported as a fallback. The `nvim.apply_patch`
 dynamic tool uses the same review UI, but Neovim owns the final apply step: it
 refuses to overwrite modified loaded buffers, runs `git apply --check`, and
-applies only after approval. When `dynamic_tools.prefer_nvim_apply_patch` is
-enabled, codex.nvim adds thread developer instructions asking Codex to prefer
-`nvim.apply_patch` for workspace edits while preserving user-provided
-developer instructions.
+applies only after approval. In a `nvim.apply_patch` review, `A` does not apply
+the patch in Neovim; it tells Codex to use native `apply_patch` for that patch
+and any remaining edits in the current turn. Later `nvim.apply_patch` calls in
+that turn return the same fallback instruction without opening another review.
+When `dynamic_tools.prefer_nvim_apply_patch` is enabled, codex.nvim adds thread
+developer instructions asking Codex to prefer `nvim.apply_patch` for workspace
+edits while preserving user-provided developer instructions.
 
 ==============================================================================
 TUI RENDERING                                          *codex.nvim-tui*

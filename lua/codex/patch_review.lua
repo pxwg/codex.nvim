@@ -65,7 +65,11 @@ local function document_for(proposal)
     push("grant root: " .. proposal.grant_root)
   end
   push("")
-  push("Keys: a accept, A accept for session, d decline, c cancel, [c/]c jump, <CR>/o open file, q close")
+  local accept_session = "A accept for session"
+  if proposal.source == "nvim_apply_patch" then
+    accept_session = "A use native apply_patch for this turn"
+  end
+  push(("Keys: a accept, %s, d decline, c cancel, [c/]c jump, <CR>/o open file, q close"):format(accept_session))
   push("")
   push("---")
 
