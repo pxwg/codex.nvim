@@ -36,7 +36,7 @@ Codex app-server is experimental upstream, so this plugin keeps the transport la
 
 - Neovim 0.10 or newer.
 - A working `codex` executable with `app-server` support.
-- `git` on `$PATH` for the Neovim-owned `nvim.apply_patch` dynamic tool in pair edit mode.
+- `git` on `$PATH` is optional for legacy unified-diff compatibility in `nvim.apply_patch`.
 - Optional: `snacks.nvim` for thread picking.
 - Optional: `blink.cmp` for prompt completions.
 
@@ -145,7 +145,7 @@ Command-line completion covers subcommands, `attach all`, loaded Codex buffer nu
 
 ## Health
 
-Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server stdio support, app-server command shape, `git` for `nvim.apply_patch` in pair mode, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
+Run `:checkhealth codex` to verify the Neovim version, `codex` executable, app-server stdio support, app-server command shape, the Codex apply_patch runtime for `nvim.apply_patch` in pair mode, optional picker/completion integrations, and dynamic tool registration. `:Codex health` still performs the runtime app-server initialization check.
 
 ## Prompt Tokens
 
@@ -199,9 +199,9 @@ Review keys:
 
 The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval.
 
-The `nvim.apply_patch` dynamic tool uses a different in-buffer flow. Neovim refuses to overwrite modified loaded buffers, runs `git apply --check`, opens the edited file directly, previews proposed changes as real buffer edits with old content shown as virtual lines, and writes only after the user resolves the hunks.
+The `nvim.apply_patch` dynamic tool uses a different in-buffer flow. It accepts Codex's native `apply_patch` patch format, verifies it against a temporary copy of the edited files, converts the result to review hunks, opens the edited file directly, previews proposed changes as real buffer edits with old content shown as virtual lines, and writes only after the user resolves the hunks. Legacy unified diffs are still accepted when `git` is available.
 
-`edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes `nvim.apply_patch` and adds harness instructions that require small, focused unified diffs, preferably one logical edit per call. The agent is told to read the current buffer or relevant current file content before patching, build the diff from exact current content, avoid large hunks with guessed line counts, use short stable context, and re-read the buffer before retrying any failed patch. It must not call native `apply_patch` directly unless `nvim.apply_patch` reports that native fallback was approved for the current turn.
+`edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes `nvim.apply_patch` and adds harness instructions that require Codex's native `apply_patch` format with small, focused patches, preferably one logical edit per call. The agent is told to read the current buffer or relevant current file content before patching, build the patch from exact current content, use relative file paths, and re-read the buffer before retrying any failed patch. It must not call native `apply_patch` directly unless `nvim.apply_patch` reports that native fallback was approved for the current turn.
 
 `edit.mode = "yolo"` disables the `nvim.apply_patch` dynamic tool and tells Codex to use the native `apply_patch` tool directly for workspace edits. Calls to `nvim.apply_patch` are rejected while yolo mode is active, so the review tool is only available in pair mode. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` selects yolo mode unless `edit.mode` is set explicitly.
 

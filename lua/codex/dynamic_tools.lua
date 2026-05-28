@@ -5,13 +5,15 @@ local util = require("codex.util")
 local M = {}
 local async_response = {}
 local native_apply_patch_fallback = {}
+local system_result
 
 local function apply_patch_protocol_text()
   return table.concat({
-    "Review a unified diff in Neovim and apply it only after user approval.",
-    "Protocol constraints: submit small, focused unified diffs; prefer one logical edit per call.",
-    "Before patching, read the current buffer or relevant current file content and build the diff from that exact content.",
-    "Avoid large hunks with manually guessed line counts; use short, stable context.",
+    "Review a Codex apply_patch edit in Neovim and apply it only after user approval.",
+    "Submit patches using the native Codex apply_patch format: *** Begin Patch, file operation headers, hunks, and *** End Patch.",
+    "File references in Codex apply_patch format must be relative to the working directory.",
+    "Prefer small, focused patches with one logical edit per call.",
+    "Before patching, read the current buffer or relevant current file content and build the patch from that exact content.",
     "If a patch fails, re-read the current buffer or file before trying again.",
     "Do not repeatedly retry failed patches against stale context.",
     "If this tool reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for all remaining edits.",
@@ -78,7 +80,7 @@ local specs = {
       properties = {
         patch = {
           type = "string",
-          description = "Unified diff to review and apply.",
+          description = "Codex apply_patch patch text to review and apply. Legacy unified diffs are still accepted.",
         },
         cwd = {
           type = "string",
@@ -263,6 +265,10 @@ local function modified_buffer_conflicts(cwd, changes)
     if path then
       paths[path] = true
     end
+    local move_path = absolute_change_path(cwd, change.move_path)
+    if move_path then
+      paths[move_path] = true
+    end
   end
   if vim.tbl_isempty(paths) then
     return {}
@@ -281,9 +287,272 @@ local function modified_buffer_conflicts(cwd, changes)
   return conflicts
 end
 
-local function system_result(args)
+local function lines_to_text(lines)
+  if not lines or #lines == 0 then
+    return ""
+  end
+  return table.concat(lines, "\n") .. "\n"
+end
+
+local function is_native_apply_patch(patch)
+  patch = util.trim(patch or "")
+  if patch:match("^<<['\"]?EOF['\"]?") then
+    return true
+  end
+  return patch:match("^%*%*%* Begin Patch") ~= nil
+end
+
+local function native_patch_body_lines(patch)
+  local lines = util.split_lines(util.trim(patch or ""))
+  if #lines >= 4 and (lines[1] == "<<EOF" or lines[1] == "<<'EOF'" or lines[1] == '<<"EOF"') then
+    if not tostring(lines[#lines]):match("EOF$") then
+      return nil, "Invalid Codex apply_patch heredoc wrapper."
+    end
+    table.remove(lines, #lines)
+    table.remove(lines, 1)
+  end
+
+  if util.trim(lines[1]) ~= "*** Begin Patch" then
+    return nil, "The first line of the patch must be '*** Begin Patch'."
+  end
+  if util.trim(lines[#lines]) ~= "*** End Patch" then
+    return nil, "The last line of the patch must be '*** End Patch'."
+  end
+  return vim.list_slice(lines, 2, #lines - 1)
+end
+
+local function parse_native_apply_patch_ops(patch)
+  local body, err = native_patch_body_lines(patch)
+  if not body then
+    return nil, err
+  end
+
+  local ops = {}
+  local current = nil
+  for _, line in ipairs(body) do
+    local environment_id = line:match("^%*%*%* Environment ID:%s*(.+)$")
+    if environment_id then
+      if util.trim(environment_id) ~= "" then
+        return nil, "nvim.apply_patch does not support Codex apply_patch environment selection."
+      end
+    end
+
+    local add_path = line:match("^%*%*%* Add File:%s*(.+)$")
+    local delete_path = line:match("^%*%*%* Delete File:%s*(.+)$")
+    local update_path = line:match("^%*%*%* Update File:%s*(.+)$")
+    local move_path = line:match("^%*%*%* Move to:%s*(.+)$")
+    if add_path then
+      current = { kind = "add", path = util.trim(add_path) }
+      table.insert(ops, current)
+    elseif delete_path then
+      current = { kind = "delete", path = util.trim(delete_path) }
+      table.insert(ops, current)
+    elseif update_path then
+      current = { kind = "update", path = util.trim(update_path) }
+      table.insert(ops, current)
+    elseif move_path and current and current.kind == "update" then
+      current.move_path = util.trim(move_path)
+    end
+  end
+
+  if #ops == 0 then
+    return nil, "Codex apply_patch contains no file operations."
+  end
+  return ops
+end
+
+local function native_path_is_absolute(path)
+  path = tostring(path or "")
+  return path:match("^/") or path:match("^%a:[/\\]")
+end
+
+local function resolve_native_patch_path(cwd, path)
+  path = util.trim(path or "")
+  if path == "" then
+    return nil, nil, "Codex apply_patch file path is empty."
+  end
+  if native_path_is_absolute(path) then
+    return nil, nil, "Codex apply_patch file paths must be relative: " .. path
+  end
+
+  local cwd_normalized = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
+  local absolute = vim.fs.normalize(vim.fs.joinpath(cwd_normalized, path))
+  local relative = vim.fs.relpath(cwd_normalized, absolute)
+  if not relative or relative == "" or relative == "." or relative:match("^%.%.[/\\]") or relative == ".." then
+    return nil, nil, "Codex apply_patch path escapes the working directory: " .. path
+  end
+  return absolute, relative
+end
+
+local function read_file_lines(path)
+  if vim.fn.filereadable(path) ~= 1 then
+    return {}
+  end
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if not ok then
+    return nil, "Failed to read file " .. path .. ": " .. tostring(lines)
+  end
+  return lines
+end
+
+local function copy_file_to_temp(src, temp_root, relative)
+  if vim.fn.filereadable(src) ~= 1 then
+    return true
+  end
+  local dst = vim.fs.joinpath(temp_root, relative)
+  local parent = vim.fn.fnamemodify(dst, ":h")
+  if parent ~= "" and vim.fn.isdirectory(parent) == 0 then
+    vim.fn.mkdir(parent, "p")
+  end
+  local ok, lines = pcall(vim.fn.readfile, src, "b")
+  if not ok then
+    return nil, "Failed to read file " .. src .. ": " .. tostring(lines)
+  end
+  ok, lines = pcall(vim.fn.writefile, lines, dst, "b")
+  if not ok then
+    return nil, "Failed to copy file " .. src .. ": " .. tostring(lines)
+  end
+  return true
+end
+
+local function apply_patch_runtime_args(patch)
+  local apply_patch = vim.fn.exepath("apply_patch")
+  if apply_patch ~= "" then
+    return { apply_patch }, { stdin = patch }
+  end
+
+  local app_command = config.get().app_server and config.get().app_server.command or nil
+  local codex = type(app_command) == "table" and app_command[1] or "codex"
+  if vim.fn.executable(codex) ~= 1 and vim.fn.exepath(codex) == "" then
+    return nil, nil, "Codex executable is required to verify native apply_patch patches: " .. tostring(codex)
+  end
+  return { codex, "--codex-run-as-apply-patch", patch }, {}
+end
+
+local function apply_native_patch_in_temp(temp_root, patch)
+  local args, opts, err = apply_patch_runtime_args(patch)
+  if not args then
+    return nil, err
+  end
+  opts = vim.tbl_extend("force", opts or {}, { cwd = temp_root, text = true })
+  local result = system_result(args, opts)
+  if result.code ~= 0 then
+    return nil, util.trim(result.stderr ~= "" and result.stderr or result.stdout)
+  end
+  return true
+end
+
+local function changes_from_native_apply_patch(cwd, patch)
+  cwd = vim.fs.normalize(vim.fn.expand(cwd or config.cwd()))
+  if vim.fn.isdirectory(cwd) ~= 1 then
+    return nil, "Patch cwd is not a directory: " .. cwd
+  end
+  local ops, err = parse_native_apply_patch_ops(patch)
+  if not ops then
+    return nil, err
+  end
+
+  local changes = {}
+  local resolved = {}
+  for _, op in ipairs(ops) do
+    local absolute, relative
+    absolute, relative, err = resolve_native_patch_path(cwd, op.path)
+    if not absolute then
+      return nil, err
+    end
+    op.absolute_path = absolute
+    op.relative_path = relative
+    table.insert(changes, {
+      kind = op.kind,
+      path = relative,
+      move_path = op.move_path,
+    })
+
+    if op.move_path then
+      local move_absolute, move_relative
+      move_absolute, move_relative, err = resolve_native_patch_path(cwd, op.move_path)
+      if not move_absolute then
+        return nil, err
+      end
+      op.move_absolute_path = move_absolute
+      op.move_relative_path = move_relative
+      changes[#changes].move_path = move_relative
+    end
+    table.insert(resolved, op)
+  end
+
+  local conflicts = modified_buffer_conflicts(cwd, changes)
+  if #conflicts > 0 then
+    return nil, "Refusing to apply patch over modified loaded buffers:\n" .. table.concat(conflicts, "\n")
+  end
+
+  local temp_root = vim.fn.tempname()
+  vim.fn.mkdir(temp_root, "p")
+  local ok, result, result_err = pcall(function()
+    for _, op in ipairs(resolved) do
+      local copy_ok, copy_err = copy_file_to_temp(op.absolute_path, temp_root, op.relative_path)
+      if not copy_ok then
+        return nil, copy_err
+      end
+      if op.move_absolute_path then
+        copy_ok, copy_err = copy_file_to_temp(op.move_absolute_path, temp_root, op.move_relative_path)
+        if not copy_ok then
+          return nil, copy_err
+        end
+      end
+    end
+
+    local apply_ok, apply_err = apply_native_patch_in_temp(temp_root, patch)
+    if not apply_ok then
+      return nil, apply_err
+    end
+
+    local out = {}
+    for _, op in ipairs(resolved) do
+      local old_lines, read_err = read_file_lines(op.absolute_path)
+      if not old_lines then
+        return nil, read_err
+      end
+      local final_relative = op.move_relative_path or op.relative_path
+      local final_path = vim.fs.joinpath(temp_root, final_relative)
+      local new_lines
+      if op.kind == "delete" and not op.move_relative_path then
+        new_lines = {}
+      else
+        new_lines, read_err = read_file_lines(final_path)
+        if not new_lines then
+          return nil, read_err
+        end
+      end
+
+      local diff = vim.diff(lines_to_text(old_lines), lines_to_text(new_lines), {
+        result_type = "unified",
+        ctxlen = 3,
+      })
+      diff = util.trim(diff or "")
+      table.insert(out, {
+        kind = op.kind,
+        path = op.relative_path,
+        move_path = op.move_relative_path,
+        diff = diff,
+      })
+    end
+    return out
+  end)
+  vim.fn.delete(temp_root, "rf")
+
+  if not ok then
+    return nil, tostring(result)
+  end
+  if not result then
+    return nil, result_err or "Native apply_patch conversion failed."
+  end
+  return result
+end
+
+system_result = function(args, opts)
   local ok, result = pcall(function()
-    return vim.system(args, { text = true }):wait()
+    return vim.system(args, opts or { text = true }):wait()
   end)
   if not ok then
     return { code = 1, stderr = tostring(result), stdout = "" }
@@ -391,7 +660,7 @@ handlers.apply_patch = function(arguments, thread, message)
   local patch = arguments.patch or arguments.diff or arguments.unified_diff
   if type(patch) ~= "string" or util.trim(patch) == "" then
     return text_response(
-      with_diagnostics("nvim.apply_patch requires a unified diff in arguments.patch.", thread),
+      with_diagnostics("nvim.apply_patch requires Codex apply_patch text in arguments.patch.", thread),
       false
     )
   end
@@ -403,7 +672,7 @@ handlers.apply_patch = function(arguments, thread, message)
 
   local rpc = require("codex.rpc")
   local cwd = vim.fs.normalize(vim.fn.expand(arguments.cwd or (thread and thread.cwd) or config.cwd()))
-  local changes = changes_from_unified_patch(patch)
+  local changes
   local responded = false
 
   local function respond(text, success)
@@ -414,10 +683,20 @@ handlers.apply_patch = function(arguments, thread, message)
     rpc.respond(message.id, text_response(with_diagnostics(text, thread), success))
   end
 
-  local valid, validation_message = validate_unified_patch(cwd, patch, changes)
-  if not valid then
-    respond(validation_message .. "\n\n" .. stale_patch_retry_message(), false)
-    return async_response
+  if is_native_apply_patch(patch) then
+    local err
+    changes, err = changes_from_native_apply_patch(cwd, patch)
+    if not changes then
+      respond(err .. "\n\n" .. stale_patch_retry_message(), false)
+      return async_response
+    end
+  else
+    changes = changes_from_unified_patch(patch)
+    local valid, validation_message = validate_unified_patch(cwd, patch, changes)
+    if not valid then
+      respond(validation_message .. "\n\n" .. stale_patch_retry_message(), false)
+      return async_response
+    end
   end
 
   local session, err = require("codex.patch_session").open({
@@ -482,6 +761,7 @@ end
 
 M._apply_unified_patch = apply_unified_patch
 M._changes_from_unified_patch = changes_from_unified_patch
+M._changes_from_native_apply_patch = changes_from_native_apply_patch
 M._validate_unified_patch = validate_unified_patch
 M._mark_native_apply_patch_fallback = mark_native_apply_patch_fallback
 M._native_apply_patch_fallback_active = native_apply_patch_fallback_active

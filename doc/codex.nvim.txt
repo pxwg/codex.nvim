@@ -151,10 +151,10 @@ Run:
 <
 
 The health provider checks the Neovim version, `codex` executable,
-app-server stdio support, app-server command shape, `git` for
-`nvim.apply_patch` in pair mode, optional picker and completion integrations,
-and dynamic tool registration. `:Codex health` performs the runtime app-server
-initialization check.
+app-server stdio support, app-server command shape, the Codex apply_patch
+runtime for `nvim.apply_patch` in pair mode, optional picker and completion
+integrations, and dynamic tool registration. `:Codex health` performs the
+runtime app-server initialization check.
 
 ==============================================================================
 PROMPT TOKENS                                    *codex.nvim-prompt-tokens*
@@ -248,19 +248,21 @@ extmarks so larger patches can be navigated as editor state.
 Modern app-server requests use `item/fileChange/requestApproval`. Legacy
 `applyPatchApproval` requests are supported as a fallback.
 
-The `nvim.apply_patch` dynamic tool uses an in-buffer flow instead. Neovim
-refuses to overwrite modified loaded buffers, runs `git apply --check`, opens
-the edited file directly, previews proposed changes as real buffer edits with
-old content shown as virtual lines, and writes only after hunks are resolved.
+The `nvim.apply_patch` dynamic tool uses an in-buffer flow instead. It accepts
+Codex's native `apply_patch` patch format, verifies it against a temporary copy
+of the edited files, converts the result to review hunks, opens the edited file
+directly, previews proposed changes as real buffer edits with old content shown
+as virtual lines, and writes only after hunks are resolved. Legacy unified diffs
+are still accepted when `git` is available.
 
 `edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes
-`nvim.apply_patch` and adds harness instructions requiring small, focused
-unified diffs, preferably one logical edit per call. The agent is told to read
-the current buffer or relevant current file content before patching, build the
-diff from exact current content, avoid large hunks with guessed line counts, use
-short stable context, and re-read the buffer before retrying any failed patch.
-It must not call native `apply_patch` directly unless `nvim.apply_patch`
-reports that native fallback was approved for the current turn.
+`nvim.apply_patch` and adds harness instructions requiring Codex's native
+`apply_patch` format with small, focused patches, preferably one logical edit
+per call. The agent is told to read the current buffer or relevant current file
+content before patching, build the patch from exact current content, use
+relative file paths, and re-read the buffer before retrying any failed patch. It
+must not call native `apply_patch` directly unless `nvim.apply_patch` reports
+that native fallback was approved for the current turn.
 
 `edit.mode = "yolo"` disables the `nvim.apply_patch` dynamic tool and tells
 Codex to use the native `apply_patch` tool directly for workspace edits. Calls

@@ -92,12 +92,20 @@ function M.check()
   local nvim_apply_patch_enabled = opts.dynamic_tools
     and opts.dynamic_tools.enabled ~= false
     and config.edit_mode() == "pair"
-  if vim.fn.executable("git") == 1 then
-    vim.health.ok("git is available for nvim.apply_patch")
+  if
+    nvim_apply_patch_enabled
+    and (vim.fn.executable("apply_patch") == 1 or (app_executable and vim.fn.executable(app_executable) == 1))
+  then
+    vim.health.ok("Codex apply_patch runtime is available for nvim.apply_patch")
   elseif nvim_apply_patch_enabled then
-    vim.health.error("git is required when nvim.apply_patch is enabled in pair edit mode")
+    vim.health.error("Codex apply_patch runtime is required when nvim.apply_patch is enabled in pair edit mode")
+  end
+  if vim.fn.executable("git") == 1 then
+    vim.health.ok("git is available for legacy unified-diff nvim.apply_patch compatibility")
+  elseif nvim_apply_patch_enabled then
+    vim.health.info("git is not available; native Codex apply_patch reviews still work")
   else
-    vim.health.warn("git is not available; nvim.apply_patch will not work")
+    vim.health.info("git is not available")
   end
 
   if has_module("codex.completion.blink") then

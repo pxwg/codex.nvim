@@ -443,6 +443,29 @@ local function write_files(session)
         else
           vim.bo[bufnr].modified = false
         end
+      elseif file.change and file.change.move_path then
+        local dest = absolute_path(session.cwd, file.change.move_path)
+        local dest_label = dest and vim.fn.fnamemodify(dest, ":.") or tostring(file.change.move_path)
+        if not dest then
+          table.insert(errors, ("move failed for %s: missing destination"):format(file.relative_path))
+        else
+          local dir = vim.fn.fnamemodify(dest, ":h")
+          if dir ~= "" and vim.fn.isdirectory(dir) == 0 then
+            vim.fn.mkdir(dir, "p")
+          end
+          local ok, err = pcall(vim.fn.writefile, final_lines, dest)
+          if not ok or (err ~= 0 and err ~= nil) then
+            table.insert(errors, ("write failed for %s: %s"):format(dest_label, tostring(err)))
+          else
+            if vim.fs.normalize(dest) ~= vim.fs.normalize(file.path) then
+              ok, err = pcall(vim.fn.delete, file.path)
+              if not ok or (err ~= 0 and err ~= nil) then
+                table.insert(errors, ("delete failed for %s: %s"):format(file.relative_path, tostring(err)))
+              end
+            end
+            vim.bo[bufnr].modified = false
+          end
+        end
       else
         local dir = vim.fn.fnamemodify(file.path, ":h")
         if dir ~= "" and vim.fn.isdirectory(dir) == 0 then

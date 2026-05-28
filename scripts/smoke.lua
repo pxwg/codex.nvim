@@ -12,8 +12,8 @@ assert(
   "thread/start should instruct Codex to prefer Neovim patch review"
 )
 assert(
-  start_params.developerInstructions:match("small, focused unified diffs"),
-  "thread/start should include strict nvim.apply_patch diff sizing protocol"
+  start_params.developerInstructions:match("native Codex apply_patch format"),
+  "thread/start should include native nvim.apply_patch protocol"
 )
 assert(
   start_params.developerInstructions:match("Do not repeatedly retry failed patches against stale context"),
@@ -31,8 +31,8 @@ assert(
   "pair edit mode should expose nvim.apply_patch"
 )
 assert(
-  dynamic_tools_for_config._apply_patch_protocol_text():match("small, focused unified diffs"),
-  "nvim.apply_patch tool description should include strict diff protocol"
+  dynamic_tools_for_config._apply_patch_protocol_text():match("native Codex apply_patch format"),
+  "nvim.apply_patch tool description should include native patch protocol"
 )
 assert(
   dynamic_tools_for_config._stale_patch_retry_message():match("Re%-read the current buffer"),
@@ -58,7 +58,7 @@ dynamic_tools_for_config.handle_call({
   params = {
     namespace = "nvim",
     tool = "apply_patch",
-    arguments = { patch = "diff --git a/x b/x\n--- a/x\n+++ b/x" },
+    arguments = { patch = "*** Begin Patch\n*** Add File: x\n+hi\n*** End Patch\n" },
   },
 })
 rpc.respond = original_rpc_respond_for_mode
@@ -408,6 +408,40 @@ assert(
   vim.fn.readfile(vim.fs.joinpath(patch_dir, "sample.txt"))[2] == "three",
   "nvim.apply_patch should apply approved patches"
 )
+vim.fn.writefile({ "one", "two" }, vim.fs.joinpath(patch_dir, "native.txt"))
+local native_apply_patch = table.concat({
+  "*** Begin Patch",
+  "*** Update File: native.txt",
+  "@@",
+  " one",
+  "-two",
+  "+three",
+  "*** End Patch",
+}, "\n")
+local native_changes, native_err = dynamic_tools._changes_from_native_apply_patch(patch_dir, native_apply_patch)
+assert(native_changes, native_err)
+assert(
+  #native_changes == 1
+    and native_changes[1].path == "native.txt"
+    and native_changes[1].diff:match("%-two")
+    and native_changes[1].diff:match("%+three"),
+  "nvim.apply_patch should convert native Codex apply_patch edits to review diffs"
+)
+local native_written = false
+require("codex.patch_session").open({
+  cwd = patch_dir,
+  changes = native_changes,
+  interactive = false,
+  on_complete = function(summary, success)
+    assert(success, summary)
+    native_written = true
+  end,
+})
+assert(native_written, "native nvim.apply_patch review should complete when accepted non-interactively")
+assert(
+  vim.fn.readfile(vim.fs.joinpath(patch_dir, "native.txt"))[2] == "three",
+  "native nvim.apply_patch should write accepted edits"
+)
 local session_dir = vim.fn.tempname()
 vim.fn.mkdir(session_dir, "p")
 local session_file = vim.fs.joinpath(session_dir, "session.txt")
@@ -448,14 +482,14 @@ vim.fn.mkdir(tool_dir, "p")
 local tool_file = vim.fs.joinpath(tool_dir, "tool.txt")
 vim.fn.writefile({ "red", "green", "blue" }, tool_file)
 local tool_patch = table.concat({
-  "diff --git a/tool.txt b/tool.txt",
-  "--- a/tool.txt",
-  "+++ b/tool.txt",
-  "@@ -1,3 +1,3 @@",
+  "*** Begin Patch",
+  "*** Update File: tool.txt",
+  "@@",
   " red",
   "-green",
   "+emerald",
   " blue",
+  "*** End Patch",
 }, "\n")
 local rpc = require("codex.rpc")
 local original_rpc_respond = rpc.respond
