@@ -45,7 +45,7 @@ Use your plugin manager of choice. With `lazy.nvim`:
 
 ```lua
 {
-  "path/to/codex.nvim",
+  "pxwg/codex.nvim",
   config = function()
     require("codex").setup()
   end,
