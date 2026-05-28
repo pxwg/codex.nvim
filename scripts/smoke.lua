@@ -47,6 +47,21 @@ assert(status_thread.status == "active", "thread payload status objects should n
 local metadata = require("codex.ui.metadata")
 local status_labels = metadata.composer_labels({ config = {}, status = { type = "active", activeFlags = {} } })
 assert(#status_labels == 1 and status_labels[1] == "active", "composer metadata should not stringify tables")
+codex.setup({ thread = { model = "gpt-5", reasoning_effort = "high" } })
+local configured_composer_labels = metadata.composer_labels({ config = {}, status = "active" })
+assert(
+  vim.deep_equal(configured_composer_labels, { "gpt-5", "effort high", "active" }),
+  "composer metadata should include configured model and reasoning effort"
+)
+local active_user_labels = metadata.user_labels(nil, {
+  state = "active",
+  raw = { settings = { model = "gpt-5-codex", reasoning_effort = "medium" } },
+})
+assert(
+  vim.deep_equal(active_user_labels, { "active", "gpt-5-codex", "effort medium" }),
+  "user metadata should include active turn model and reasoning effort"
+)
+codex.setup()
 require("codex.core").handle_notification({
   method = "thread/status/changed",
   params = {
@@ -503,6 +518,31 @@ state.upsert_item("smoke-pending-asset", "turn-asset", {
 assert(
   #events.pending_blocks(asset_pending_thread) == 0,
   "pending asset prompt should hide after canonical userMessage echo"
+)
+local turn_settings_thread = state.ensure_thread("smoke-turn-settings", {
+  title = "Smoke turn settings",
+  cwd = vim.fn.getcwd(),
+})
+state.set_turn_settings("smoke-turn-settings", "turn-settings", {
+  model = "gpt-5-codex",
+  effort = "high",
+})
+state.upsert_item("smoke-turn-settings", "turn-settings", {
+  id = "user-turn-settings",
+  type = "userMessage",
+  status = "active",
+  content = {
+    { type = "text", text = "turn settings prompt", text_elements = {} },
+  },
+})
+local turn_setting_blocks = events.normalize_thread(turn_settings_thread)
+assert(
+  vim.deep_equal(metadata.user_labels(turn_settings_thread, turn_setting_blocks[1]), {
+    "active",
+    "gpt-5-codex",
+    "effort high",
+  }),
+  "userMessage headers should use saved turn settings"
 )
 local server_echo_thread = state.ensure_thread("smoke-pending-server-echo", {
   title = "Smoke pending server echo",

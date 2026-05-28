@@ -195,6 +195,11 @@ item_converters.userMessage = function(item, turn_id)
     message_id = turn_id,
     item_id = item.id,
     text = user_text(item.content),
+    state = status_of(item),
+    metadata = {
+      model = item.model,
+      reasoningEffort = item.reasoningEffort or item.effort,
+    },
     raw = item,
   }
 end
@@ -323,8 +328,13 @@ function M.normalize_thread(thread)
   local blocks = {}
   for _, item_id in ipairs(thread.item_order or {}) do
     local item = thread.items[item_id]
-    local block = M.block_for_item(item, thread.item_turns and thread.item_turns[item_id])
+    local turn_id = thread.item_turns and thread.item_turns[item_id]
+    local block = M.block_for_item(item, turn_id)
     if block then
+      local settings = thread.turn_settings and thread.turn_settings[turn_id]
+      if block.type == "UserBlock" and type(settings) == "table" then
+        block.metadata = vim.tbl_extend("keep", block.metadata or {}, settings)
+      end
       table.insert(blocks, block)
     end
   end

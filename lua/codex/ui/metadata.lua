@@ -1,4 +1,5 @@
 local util = require("codex.util")
+local config = require("codex.config")
 
 local M = {}
 
@@ -9,11 +10,49 @@ local function add(labels, value)
   end
 end
 
+local function first_label(...)
+  for index = 1, select("#", ...) do
+    local label = util.label(select(index, ...))
+    if label then
+      return label
+    end
+  end
+  return nil
+end
+
+local function source_model(source)
+  if type(source) ~= "table" then
+    return nil
+  end
+  return first_label(source.model, source.modelId, source.modelName)
+end
+
+local function source_effort(source)
+  if type(source) ~= "table" then
+    return nil
+  end
+  local reasoning = type(source.reasoning) == "table" and source.reasoning or {}
+  return first_label(source.reasoning_effort, source.reasoningEffort, source.effort, reasoning.effort)
+end
+
+local function add_settings_labels(labels, ...)
+  local model
+  local effort
+  for index = 1, select("#", ...) do
+    local source = select(index, ...)
+    model = model or source_model(source)
+    effort = effort or source_effort(source)
+  end
+  add(labels, model)
+  if effort then
+    add(labels, "effort " .. effort)
+  end
+end
+
 function M.composer_labels(thread)
   local labels = {}
-  local cfg = thread and thread.config or {}
-  add(labels, cfg.model)
-  add(labels, cfg.reasoning_effort and ("effort " .. cfg.reasoning_effort))
+  local cfg = config.get().thread or {}
+  add_settings_labels(labels, cfg, thread and thread.settings, thread and thread.config)
   if thread and thread.status then
     add(labels, thread.status)
   end
@@ -23,6 +62,8 @@ end
 function M.user_labels(_, block)
   local labels = {}
   add(labels, block and block.state)
+  local raw = block and block.raw
+  add_settings_labels(labels, block and block.metadata, type(raw) == "table" and raw.settings or nil, raw)
   return labels
 end
 

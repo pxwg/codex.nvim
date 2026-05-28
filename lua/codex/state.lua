@@ -16,6 +16,50 @@ local function append_unique(list, value)
   table.insert(list, value)
 end
 
+local function first_value(...)
+  for index = 1, select("#", ...) do
+    local value = util.value(select(index, ...))
+    if value ~= nil and value ~= "" then
+      return value
+    end
+  end
+  return nil
+end
+
+local function normalize_turn_settings(settings)
+  if type(settings) ~= "table" then
+    return nil
+  end
+  local reasoning = type(settings.reasoning) == "table" and settings.reasoning or {}
+  local normalized = {
+    model = first_value(settings.model, settings.modelId, settings.modelName),
+    reasoning_effort = first_value(
+      settings.reasoning_effort,
+      settings.reasoningEffort,
+      settings.effort,
+      reasoning.effort
+    ),
+  }
+  if not normalized.model and not normalized.reasoning_effort then
+    return nil
+  end
+  return normalized
+end
+
+local function merge_turn_settings(thread, turn_id, settings)
+  local normalized = normalize_turn_settings(settings)
+  if not normalized or not turn_id then
+    return nil
+  end
+  thread.turn_settings = thread.turn_settings or {}
+  local existing = thread.turn_settings[turn_id] or {}
+  for key, value in pairs(normalized) do
+    existing[key] = value
+  end
+  thread.turn_settings[turn_id] = existing
+  return existing
+end
+
 function M.get_thread(thread_id)
   return thread_id and M.threads[thread_id] or nil
 end
@@ -36,6 +80,7 @@ function M.ensure_thread(thread_id, attrs)
       title = nil,
       config = {},
       turns = {},
+      turn_settings = {},
       turn_order = {},
       items = {},
       item_order = {},
@@ -80,6 +125,9 @@ function M.update_thread_from_payload(payload)
   })
   thread.config.model = util.value(payload.model) or thread.config.model
   thread.config.model_provider = util.value(payload.modelProvider) or thread.config.model_provider
+  thread.config.service_tier = util.value(payload.serviceTier) or thread.config.service_tier
+  thread.config.reasoning_effort = first_value(payload.reasoningEffort, payload.reasoning_effort, payload.effort)
+    or thread.config.reasoning_effort
   if payload.turns then
     for _, turn in ipairs(payload.turns) do
       M.add_turn(payload.id, turn)
@@ -92,12 +140,23 @@ function M.add_turn(thread_id, turn)
   local thread = M.ensure_thread(thread_id)
   thread.turns[turn.id] = turn
   append_unique(thread.turn_order, turn.id)
+  merge_turn_settings(thread, turn.id, turn)
+  merge_turn_settings(thread, turn.id, turn.settings)
+  merge_turn_settings(thread, turn.id, turn.config)
   if turn.items then
     for _, item in ipairs(turn.items) do
       M.upsert_item(thread_id, turn.id, item)
     end
   end
   return turn
+end
+
+function M.set_turn_settings(thread_id, turn_id, settings)
+  if not thread_id then
+    return nil
+  end
+  local thread = M.ensure_thread(thread_id)
+  return merge_turn_settings(thread, turn_id, settings)
 end
 
 function M.upsert_item(thread_id, turn_id, item)

@@ -134,6 +134,13 @@ local function turn_start_params(thread_id, input)
   return params
 end
 
+local function turn_settings_from_params(params, thread)
+  return {
+    model = params.model or (thread and thread.config and thread.config.model),
+    reasoning_effort = params.effort,
+  }
+end
+
 function M.setup(opts)
   config.setup(opts)
   core.setup()
@@ -227,17 +234,20 @@ function M.submit_text(text, thread_id)
       return
     end
     local thread = state.get_thread(thread_id)
+    local params = turn_start_params(thread_id, input)
     if thread then
+      local settings = turn_settings_from_params(params, thread)
       thread.pending_request = {
         prompt = text,
         input = input,
         created_at = util.now_ms(),
+        settings = settings,
       }
       thread.generation = "submitted"
       thread.status_message = "Codex is thinking..."
       buffers.schedule_render(thread_id)
     end
-    rpc.request("turn/start", turn_start_params(thread_id, input), function(err, result)
+    rpc.request("turn/start", params, function(err, result)
       if err then
         local failed_thread = state.get_thread(thread_id)
         if failed_thread then
@@ -257,6 +267,7 @@ function M.submit_text(text, thread_id)
       local submitted_thread = state.get_thread(thread_id)
       if submitted_thread and submitted_thread.pending_request and turn.id then
         submitted_thread.pending_request.turn_id = turn.id
+        state.set_turn_settings(thread_id, turn.id, submitted_thread.pending_request.settings)
       end
       buffers.schedule_render(thread_id)
     end)
