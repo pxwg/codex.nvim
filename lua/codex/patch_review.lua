@@ -115,7 +115,7 @@ local function document_for(proposal)
   push("")
   local accept_session = "A accept for session"
   if source == "nvim_apply_patch" then
-    accept_session = "A use native apply_patch for this turn"
+    accept_session = "A use Neovim auto-apply for this session"
   end
   push(("Keys: a accept, %s, d decline, c cancel, [c/]c jump, <CR>/o open file, q close"):format(accept_session))
   push("")

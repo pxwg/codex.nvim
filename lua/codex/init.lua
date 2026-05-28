@@ -71,7 +71,8 @@ local function edit_tool_instruction()
   return table.concat({
     "codex.nvim edit mode is pair.",
     "When changing workspace files from codex.nvim, use the nvim.apply_patch dynamic tool for edits.",
-    "Do not use the native apply_patch tool directly unless nvim.apply_patch reports that native apply_patch fallback is approved for the current turn.",
+    "Do not use the native apply_patch tool directly; pair mode declines native file-change approvals.",
+    "If nvim.apply_patch reports that Neovim auto-apply is enabled for the current session, keep using nvim.apply_patch; it will skip interactive hunk review and apply through Neovim.",
     require("codex.dynamic_tools")._apply_patch_protocol_text(),
   }, " ")
 end

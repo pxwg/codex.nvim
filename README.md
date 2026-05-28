@@ -197,11 +197,11 @@ Review keys:
 - `<CR>` / `o`: open the related file at the hunk location when available
 - `q`: close the review window without answering
 
-The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. For modern app-server file changes, Codex still owns the final patch application after approval.
+The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. Outside pair mode, Codex still owns the final app-server file-change application after approval.
 
 The `nvim.apply_patch` dynamic tool uses a different in-buffer flow. It accepts Codex's native `apply_patch` patch format, verifies it against a temporary copy of the edited files, converts the result to review hunks, opens the edited file directly, previews proposed changes as real buffer edits with old content shown as virtual lines, and writes only after the user resolves the hunks. Legacy unified diffs are still accepted when `git` is available.
 
-`edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes `nvim.apply_patch` and adds harness instructions that require Codex's native `apply_patch` format with small, focused patches, preferably one logical edit per call. The agent is told to read the current buffer or relevant current file content before patching, build the patch from exact current content, use relative file paths, and re-read the buffer before retrying any failed patch. It must not call native `apply_patch` directly unless `nvim.apply_patch` reports that native fallback was approved for the current turn.
+`edit.mode = "pair"` is the default. In pair mode, codex.nvim exposes `nvim.apply_patch` and adds harness instructions that require Codex's native `apply_patch` format with small, focused patches, preferably one logical edit per call. The agent is told to read the current buffer or relevant current file content before patching, build the patch from exact current content, use relative file paths, and re-read the buffer before retrying any failed patch. It must not call native `apply_patch` directly; pair mode declines native app-server file-change approvals. If Neovim auto-apply is enabled for a session, the agent still uses `nvim.apply_patch`, but codex.nvim skips interactive hunk review and applies through Neovim after verification.
 
 The pair-mode instruction treats returned diagnostics, rejected hunk reasons, and stale-context retry guidance as pair-coding feedback for the next edit. Agents should fix reported errors and warnings before reporting completion, address hints when practical, incorporate rejection reasons into the next patch strategy, and explain any intentional or false-positive leftovers.
 
@@ -213,7 +213,7 @@ In a `nvim.apply_patch` buffer review:
 - `<leader>cr`: reject current hunk and prompt for a reason
 - `<leader>cA`: accept all remaining hunks
 - `<leader>cR`: reject all remaining hunks and prompt for a reason
-- `<leader>cf`: switch the current turn to native `apply_patch` fallback
+- `<leader>cf`: use Neovim auto-apply for the session
 - `<leader>cq`: cancel the review
 - `[c` / `]c`: jump between pending hunks
 

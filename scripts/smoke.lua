@@ -29,6 +29,11 @@ assert(
   start_params.developerInstructions:match("handle errors and warnings before reporting completion"),
   "thread/start should require resolving reported errors and warnings before completion"
 )
+assert(
+  start_params.developerInstructions:match("declines native file%-change approvals")
+    and start_params.developerInstructions:match("Neovim auto%-apply"),
+  "pair edit mode should keep edits on the Neovim apply_patch path"
+)
 local composed_instructions = codex._compose_developer_instructions("custom instruction")
 assert(composed_instructions:match("custom instruction"), "default edit instruction should preserve user instructions")
 assert(composed_instructions:match("nvim%.apply_patch"), "default edit instruction should mention nvim.apply_patch")
@@ -47,6 +52,10 @@ assert(
 assert(
   dynamic_tools_for_config._apply_patch_protocol_text():match("pair%-coding feedback"),
   "nvim.apply_patch tool description should frame returned feedback as edit guidance"
+)
+assert(
+  dynamic_tools_for_config._apply_patch_protocol_text():match("Neovim auto%-apply"),
+  "nvim.apply_patch tool description should keep auto-apply on the Neovim path"
 )
 assert(
   dynamic_tools_for_config._stale_patch_retry_message():match("Re%-read the current buffer"),
@@ -684,27 +693,83 @@ assert(
   "successful dynamic nvim.apply_patch response should include target buffer diagnostics"
 )
 assert(vim.fn.readfile(accept_tool_file)[2] == "violet", "accepted dynamic patch should write accepted file content")
+local auto_apply_tool_file = vim.fs.joinpath(tool_dir, "auto-apply.txt")
+vim.fn.writefile({ "north", "center", "south" }, auto_apply_tool_file)
+local auto_apply_tool_patch = table.concat({
+  "*** Begin Patch",
+  "*** Update File: auto-apply.txt",
+  "@@",
+  " north",
+  "-center",
+  "+middle",
+  " south",
+  "*** End Patch",
+}, "\n")
+local auto_apply_tool_response = nil
+rpc.respond = function(id, result)
+  assert(id == "tool-apply-auto", "auto-applied dynamic tool should respond to the original request id")
+  auto_apply_tool_response = result
+end
+dynamic_tools._mark_nvim_apply_patch_auto_apply({ threadId = "smoke-context", turnId = "turn-auto-apply" })
+dynamic_tools.handle_call({
+  id = "tool-apply-auto",
+  params = {
+    namespace = "nvim",
+    tool = "apply_patch",
+    threadId = "smoke-context",
+    turnId = "turn-auto-apply",
+    arguments = {
+      cwd = tool_dir,
+      patch = auto_apply_tool_patch,
+    },
+  },
+})
+vim.wait(1000, function()
+  return auto_apply_tool_response ~= nil
+end, 20)
+rpc.respond = original_rpc_respond
+assert(
+  auto_apply_tool_response and auto_apply_tool_response.success == true,
+  "Neovim auto-apply should report successful dynamic patches"
+)
+assert(
+  auto_apply_tool_response.contentItems[1].text:match("Neovim auto%-apply")
+    and auto_apply_tool_response.contentItems[1].text:match("nvim%.apply_patch"),
+  "Neovim auto-apply response should keep the agent on nvim.apply_patch"
+)
+assert(vim.fn.readfile(auto_apply_tool_file)[2] == "middle", "Neovim auto-apply should write through Neovim")
+dynamic_tools.clear_thread_state("smoke-context")
 vim.diagnostic.reset(smoke_diag_ns, source_buf)
 assert(vim.fn.readfile(tool_file)[2] == "green", "dynamic patch rejection should preserve original file content")
-local fallback_thread = { id = "thread-fallback", active_turn_id = "turn-fallback" }
-local fallback_params = { threadId = "thread-fallback", turnId = "turn-fallback" }
+local auto_apply_thread = { id = "thread-auto-apply", active_turn_id = "turn-auto-apply" }
+local auto_apply_params = { threadId = "thread-auto-apply", turnId = "turn-auto-apply" }
 assert(
-  not dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
-  "native apply_patch fallback should start disabled"
+  not dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
+  "Neovim auto-apply should start disabled"
 )
-dynamic_tools._mark_native_apply_patch_fallback(fallback_params, fallback_thread)
+dynamic_tools._mark_nvim_apply_patch_auto_apply(auto_apply_params, auto_apply_thread)
 assert(
-  dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
-  "accept-for-session should enable native apply_patch fallback for the turn"
+  dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
+  "accept-for-session should enable Neovim auto-apply for the session"
 )
 assert(
-  dynamic_tools._native_apply_patch_fallback_message():match("native `apply_patch`"),
-  "native apply_patch fallback message should tell Codex what tool to use"
+  dynamic_tools._nvim_apply_patch_auto_apply_message():match("nvim%.apply_patch"),
+  "Neovim auto-apply message should keep Codex on the Neovim tool path"
 )
-dynamic_tools.clear_turn_state("thread-fallback", "turn-fallback")
+dynamic_tools.clear_thread_state("thread-auto-apply")
 assert(
-  not dynamic_tools._native_apply_patch_fallback_active(fallback_params, fallback_thread),
-  "turn cleanup should clear native apply_patch fallback"
+  not dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
+  "thread cleanup should clear Neovim auto-apply"
+)
+dynamic_tools._mark_nvim_apply_patch_auto_apply(auto_apply_params, auto_apply_thread, "turn")
+assert(
+  dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
+  "turn-scoped Neovim auto-apply should be supported"
+)
+dynamic_tools.clear_turn_state("thread-auto-apply", "turn-auto-apply")
+assert(
+  not dynamic_tools._nvim_apply_patch_auto_apply_active(auto_apply_params, auto_apply_thread),
+  "turn cleanup should clear turn-scoped Neovim auto-apply"
 )
 
 local done = false
@@ -1115,13 +1180,35 @@ assert(
   core_pending_thread.pending_request.turn_id == "turn-core",
   "turn/started should bind pending requests to the active turn"
 )
-dynamic_tools._mark_native_apply_patch_fallback(
+dynamic_tools._mark_nvim_apply_patch_auto_apply(
   { threadId = "smoke-core-pending", turnId = "turn-core" },
-  core_pending_thread
+  core_pending_thread,
+  "turn"
 )
 assert(
-  dynamic_tools._native_apply_patch_fallback_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
-  "native apply_patch fallback should be active before turn completion"
+  dynamic_tools._nvim_apply_patch_auto_apply_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
+  "turn-scoped Neovim auto-apply should be active before turn completion"
+)
+local original_rpc_respond_for_pair_native = rpc.respond
+local pair_native_response = nil
+rpc.respond = function(id, result)
+  pair_native_response = { id = id, result = result }
+end
+core.handle_server_request({
+  id = "pair-native-approval",
+  method = "item/fileChange/requestApproval",
+  params = {
+    threadId = "smoke-core-pending",
+    turnId = "turn-core",
+    itemId = "native-write",
+  },
+})
+rpc.respond = original_rpc_respond_for_pair_native
+assert(
+  pair_native_response
+    and pair_native_response.id == "pair-native-approval"
+    and pair_native_response.result.decision == "decline",
+  "pair mode should decline native app-server file-change approvals"
 )
 core.handle_notification({
   method = "turn/completed",
@@ -1131,8 +1218,23 @@ core.handle_notification({
   },
 })
 assert(
-  not dynamic_tools._native_apply_patch_fallback_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
-  "turn/completed should clear native apply_patch fallback"
+  not dynamic_tools._nvim_apply_patch_auto_apply_active({ threadId = "smoke-core-pending", turnId = "turn-core" }),
+  "turn/completed should clear turn-scoped Neovim auto-apply"
+)
+dynamic_tools._mark_nvim_apply_patch_auto_apply({ threadId = "smoke-thread-close" })
+assert(
+  dynamic_tools._nvim_apply_patch_auto_apply_active({ threadId = "smoke-thread-close" }),
+  "session-scoped Neovim auto-apply should be active before thread close"
+)
+core.handle_notification({
+  method = "thread/closed",
+  params = {
+    threadId = "smoke-thread-close",
+  },
+})
+assert(
+  not dynamic_tools._nvim_apply_patch_auto_apply_active({ threadId = "smoke-thread-close" }),
+  "thread/closed should clear session-scoped Neovim auto-apply"
 )
 state.upsert_item("smoke-extmarks", "turn-1", {
   id = "reasoning-1",

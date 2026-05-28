@@ -246,6 +246,9 @@ handlers["thread/closed"] = function(params)
     set_generation(thread, "idle", nil)
     schedule(params.threadId)
   end
+  pcall(function()
+    require("codex.dynamic_tools").clear_thread_state(params.threadId)
+  end)
 end
 
 handlers["thread/goal/updated"] = function(params)
@@ -543,6 +546,38 @@ handlers["configWarning"] = handlers["warning"]
 handlers["guardianWarning"] = handlers["warning"]
 handlers["deprecationNotice"] = handlers["warning"]
 
+local function nvim_apply_patch_pair_mode()
+  local ok, dynamic_tools = pcall(require, "codex.dynamic_tools")
+  return ok
+    and type(dynamic_tools._nvim_apply_patch_enabled) == "function"
+    and dynamic_tools._nvim_apply_patch_enabled()
+end
+
+local function native_file_change_decline_response(method)
+  if method == "applyPatchApproval" then
+    return { decision = "denied" }
+  end
+  return { decision = "decline" }
+end
+
+local function decline_native_file_change_in_pair_mode(message)
+  if not nvim_apply_patch_pair_mode() then
+    return false
+  end
+
+  local params = message.params or {}
+  append_timeline(
+    message.method or "item/fileChange/requestApproval",
+    params,
+    "Native patch declined",
+    "declined",
+    "pair edit mode routes file edits through nvim.apply_patch"
+  )
+  require("codex.rpc").respond(message.id, native_file_change_decline_response(message.method))
+  util.notify("pair mode declined native apply_patch; use nvim.apply_patch", vim.log.levels.WARN)
+  return true
+end
+
 function M.handle_notification(message)
   local handler = handlers[message.method]
   if handler then
@@ -554,6 +589,9 @@ end
 
 function M.handle_server_request(message)
   if message.method == "item/fileChange/requestApproval" or message.method == "applyPatchApproval" then
+    if decline_native_file_change_in_pair_mode(message) then
+      return
+    end
     local params = message.params or {}
     local thread = state.get_thread(params.threadId or params.conversationId)
     set_generation(thread, "patch_review", "Waiting for patch review...")

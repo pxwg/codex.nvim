@@ -246,7 +246,9 @@ The review buffer indexes file changes and unified-diff hunk headers with
 extmarks so larger patches can be navigated as editor state.
 
 Modern app-server requests use `item/fileChange/requestApproval`. Legacy
-`applyPatchApproval` requests are supported as a fallback.
+`applyPatchApproval` requests are supported as a protocol fallback. Outside
+pair mode, Codex still owns the final app-server file-change application after
+approval.
 
 The `nvim.apply_patch` dynamic tool uses an in-buffer flow instead. It accepts
 Codex's native `apply_patch` patch format, verifies it against a temporary copy
@@ -261,8 +263,10 @@ are still accepted when `git` is available.
 per call. The agent is told to read the current buffer or relevant current file
 content before patching, build the patch from exact current content, use
 relative file paths, and re-read the buffer before retrying any failed patch. It
-must not call native `apply_patch` directly unless `nvim.apply_patch` reports
-that native fallback was approved for the current turn.
+must not call native `apply_patch` directly; pair mode declines native
+app-server file-change approvals. If Neovim auto-apply is enabled for a session,
+the agent still uses `nvim.apply_patch`, but codex.nvim skips interactive hunk
+review and applies through Neovim after verification.
 
 The pair-mode instruction treats returned diagnostics, rejected hunk reasons,
 and stale-context retry guidance as pair-coding feedback for the next edit.
@@ -283,7 +287,7 @@ In a `nvim.apply_patch` buffer review:
   <leader>cr  reject current hunk and prompt for a reason
   <leader>cA  accept all remaining hunks
   <leader>cR  reject all remaining hunks and prompt for a reason
-  <leader>cf  use native apply_patch for the current turn
+  <leader>cf  use Neovim auto-apply for the session
   <leader>cq  cancel the review
   [c          previous pending hunk
   ]c          next pending hunk

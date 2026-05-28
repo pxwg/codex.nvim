@@ -14,7 +14,7 @@ local keymaps = {
   reject = "<leader>cr",
   accept_all = "<leader>cA",
   reject_all = "<leader>cR",
-  fallback = "<leader>cf",
+  auto_apply = "<leader>cf",
   cancel = "<leader>cq",
   next = "]c",
   prev = "[c",
@@ -304,7 +304,7 @@ local function update_hints(session)
   vim.api.nvim_buf_set_extmark(hunk.bufnr, hint_ns, start_row, 0, {
     virt_text = {
       {
-        ("Codex patch %d/%d (%d pending): %s accept, %s reject, %s all, %s reject-all, %s fallback"):format(
+        ("Codex patch %d/%d (%d pending): %s accept, %s reject, %s all, %s reject-all, %s auto-apply"):format(
           hunk.index,
           total,
           pending,
@@ -312,7 +312,7 @@ local function update_hints(session)
           keymaps.reject,
           keymaps.accept_all,
           keymaps.reject_all,
-          keymaps.fallback
+          keymaps.auto_apply
         ),
         "Comment",
       },
@@ -665,15 +665,14 @@ local function cancel(session)
   end)
 end
 
-local function fallback(session)
-  if not session.on_fallback then
-    util.notify("native apply_patch fallback is not available for this patch", vim.log.levels.WARN)
-    return
+local function auto_apply(session)
+  if session.on_auto_apply then
+    local ok, err = pcall(session.on_auto_apply)
+    if not ok then
+      util.notify("Neovim auto-apply setup failed: " .. tostring(err), vim.log.levels.ERROR)
+    end
   end
-  restore_original_files(session)
-  cleanup(session)
-  session.completed = true
-  session.on_fallback()
+  accept_all(session)
 end
 
 local function setup_keymaps(session, bufnr)
@@ -692,9 +691,9 @@ local function setup_keymaps(session, bufnr)
   vim.keymap.set("n", keymaps.reject_all, function()
     reject_all(session)
   end, opts("Reject all Codex patch hunks"))
-  vim.keymap.set("n", keymaps.fallback, function()
-    fallback(session)
-  end, opts("Use native apply_patch fallback"))
+  vim.keymap.set("n", keymaps.auto_apply, function()
+    auto_apply(session)
+  end, opts("Use Neovim auto-apply for this session"))
   vim.keymap.set("n", keymaps.cancel, function()
     cancel(session)
   end, opts("Cancel Codex patch review"))
@@ -848,7 +847,7 @@ function M.open(opts)
     changes = opts.changes or {},
     thread = thread,
     on_complete = opts.on_complete,
-    on_fallback = opts.on_fallback,
+    on_auto_apply = opts.on_auto_apply,
     files = {},
     file_order = {},
     buffers = {},

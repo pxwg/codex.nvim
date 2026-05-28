@@ -103,7 +103,7 @@ function M.check()
   if vim.fn.executable("git") == 1 then
     vim.health.ok("git is available for legacy unified-diff nvim.apply_patch compatibility")
   elseif nvim_apply_patch_enabled then
-    vim.health.info("git is not available; native Codex apply_patch reviews still work")
+    vim.health.info("git is not available; native Codex apply_patch-format reviews still work")
   else
     vim.health.info("git is not available")
   end

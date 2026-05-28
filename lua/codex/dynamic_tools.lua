@@ -4,7 +4,8 @@ local util = require("codex.util")
 
 local M = {}
 local async_response = {}
-local native_apply_patch_fallback = {}
+local nvim_apply_patch_auto_apply_by_thread = {}
+local nvim_apply_patch_auto_apply_by_turn = {}
 local system_result
 
 local function apply_patch_protocol_text()
@@ -18,7 +19,7 @@ local function apply_patch_protocol_text()
     "Do not repeatedly retry failed patches against stale context.",
     "Treat returned nvim.diagnostics, user hunk feedback, and stale-context retry guidance as pair-coding feedback for the next edit.",
     "Continue by fixing reported diagnostics, incorporating rejection feedback, or re-reading current content before retrying stale patches; handle errors and warnings before reporting completion, address hints when practical, and explain intentional or false-positive leftovers.",
-    "If this tool reports that native apply_patch fallback is approved for the current turn, stop calling nvim.apply_patch and use the native apply_patch tool for all remaining edits.",
+    "If this tool reports that Neovim auto-apply is enabled for the current session, keep using nvim.apply_patch; it will skip interactive hunk review and apply through Neovim.",
   }, " ")
 end
 
@@ -626,34 +627,52 @@ local function turn_id_for(params, thread)
   return params.turnId or params.turn_id or (thread and thread.active_turn_id)
 end
 
-local function native_fallback_key(params, thread)
+local function thread_state_key(params, thread)
   local thread_id = params.threadId or params.thread_id or (thread and thread.id)
+  return thread_id and tostring(thread_id) or nil
+end
+
+local function turn_state_key(params, thread)
+  local thread_id = thread_state_key(params, thread)
   local turn_id = turn_id_for(params, thread)
   if not thread_id or not turn_id then
     return nil
   end
-  return tostring(thread_id) .. ":" .. tostring(turn_id)
+  return thread_id .. ":" .. tostring(turn_id)
 end
 
-local function mark_native_apply_patch_fallback(params, thread)
-  local key = native_fallback_key(params or {}, thread)
+local function mark_nvim_apply_patch_auto_apply(params, thread, scope)
+  local key
+  if scope == "turn" then
+    key = turn_state_key(params or {}, thread)
+    if key then
+      nvim_apply_patch_auto_apply_by_turn[key] = true
+    end
+    return key
+  end
+
+  key = thread_state_key(params or {}, thread)
   if key then
-    native_apply_patch_fallback[key] = true
+    nvim_apply_patch_auto_apply_by_thread[key] = true
   end
   return key
 end
 
-local function native_apply_patch_fallback_active(params, thread)
-  local key = native_fallback_key(params or {}, thread)
-  return key and native_apply_patch_fallback[key] == true
+local function nvim_apply_patch_auto_apply_active(params, thread)
+  local thread_key = thread_state_key(params or {}, thread)
+  if thread_key and nvim_apply_patch_auto_apply_by_thread[thread_key] == true then
+    return true
+  end
+  local turn_key = turn_state_key(params or {}, thread)
+  return turn_key and nvim_apply_patch_auto_apply_by_turn[turn_key] == true
 end
 
-local function native_apply_patch_fallback_message()
+local function nvim_apply_patch_auto_apply_message()
   return table.concat({
-    "User selected `A` in the Neovim patch review.",
-    "This patch was not applied by `nvim.apply_patch`.",
-    "For this turn, do not call `nvim.apply_patch` again; use the native `apply_patch` tool for this patch and any remaining edits.",
-    "No additional Neovim patch review is required for this turn.",
+    "User enabled Neovim auto-apply for this session.",
+    "This patch was applied through `nvim.apply_patch` after Neovim verification.",
+    "For this session, keep using `nvim.apply_patch` for remaining edits; it will skip interactive hunk review and apply through Neovim.",
+    "Do not use the native `apply_patch` tool in pair mode.",
   }, " ")
 end
 
@@ -668,10 +687,6 @@ handlers.apply_patch = function(arguments, thread, message)
   end
 
   local params = message.params or {}
-  if native_apply_patch_fallback_active(params, thread) then
-    return text_response(with_diagnostics(native_apply_patch_fallback_message(), thread), false)
-  end
-
   local rpc = require("codex.rpc")
   local cwd = vim.fs.normalize(vim.fn.expand(arguments.cwd or (thread and thread.cwd) or config.cwd()))
   local changes
@@ -707,12 +722,15 @@ handlers.apply_patch = function(arguments, thread, message)
     cwd = cwd,
     reason = arguments.reason,
     changes = changes,
+    interactive = not nvim_apply_patch_auto_apply_active(params, thread),
     on_complete = function(summary, success)
+      if nvim_apply_patch_auto_apply_active(params, thread) then
+        summary = nvim_apply_patch_auto_apply_message() .. "\n\n" .. tostring(summary or "")
+      end
       respond(summary, success)
     end,
-    on_fallback = function()
-      mark_native_apply_patch_fallback(params, thread)
-      respond(native_apply_patch_fallback_message(), false)
+    on_auto_apply = function()
+      mark_nvim_apply_patch_auto_apply(params, thread)
     end,
   })
   if not session then
@@ -733,7 +751,7 @@ function M.handle_call(message)
     rpc.respond(
       message.id,
       text_response(
-        "nvim.apply_patch is not exposed in the current codex.nvim edit mode. Use native apply_patch directly only when edit.mode is yolo or when nvim.apply_patch fallback has been approved for this turn.",
+        "nvim.apply_patch is not exposed in the current codex.nvim edit mode. Use native apply_patch directly only when edit.mode is yolo.",
         false
       )
     )
@@ -758,16 +776,30 @@ function M.clear_turn_state(thread_id, turn_id)
   if not thread_id or not turn_id then
     return
   end
-  native_apply_patch_fallback[tostring(thread_id) .. ":" .. tostring(turn_id)] = nil
+  nvim_apply_patch_auto_apply_by_turn[tostring(thread_id) .. ":" .. tostring(turn_id)] = nil
+end
+
+function M.clear_thread_state(thread_id)
+  if not thread_id then
+    return
+  end
+  thread_id = tostring(thread_id)
+  nvim_apply_patch_auto_apply_by_thread[thread_id] = nil
+  local prefix = thread_id .. ":"
+  for key in pairs(nvim_apply_patch_auto_apply_by_turn) do
+    if key:sub(1, #prefix) == prefix then
+      nvim_apply_patch_auto_apply_by_turn[key] = nil
+    end
+  end
 end
 
 M._apply_unified_patch = apply_unified_patch
 M._changes_from_unified_patch = changes_from_unified_patch
 M._changes_from_native_apply_patch = changes_from_native_apply_patch
 M._validate_unified_patch = validate_unified_patch
-M._mark_native_apply_patch_fallback = mark_native_apply_patch_fallback
-M._native_apply_patch_fallback_active = native_apply_patch_fallback_active
-M._native_apply_patch_fallback_message = native_apply_patch_fallback_message
+M._mark_nvim_apply_patch_auto_apply = mark_nvim_apply_patch_auto_apply
+M._nvim_apply_patch_auto_apply_active = nvim_apply_patch_auto_apply_active
+M._nvim_apply_patch_auto_apply_message = nvim_apply_patch_auto_apply_message
 M._nvim_apply_patch_enabled = nvim_apply_patch_enabled
 M._apply_patch_protocol_text = apply_patch_protocol_text
 M._stale_patch_retry_message = stale_patch_retry_message
