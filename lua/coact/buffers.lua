@@ -2,6 +2,7 @@ local config = require("coact.config")
 local context = require("coact.context")
 local hooks = require("coact.hooks")
 local metadata = require("coact.ui.metadata")
+local composer_statusline = require("coact.ui.statusline")
 local render = require("coact.ui.render")
 local state = require("coact.state")
 local util = require("coact.util")
@@ -29,6 +30,8 @@ local restorable_window_options = {
   "conceallevel",
   "winbar",
   "winfixheight",
+  "scrolloff",
+  "sidescrolloff",
 }
 
 local history_window_options = {
@@ -56,6 +59,8 @@ local prompt_window_options = {
   foldenable = false,
   foldlevel = 99,
   winfixheight = true,
+  scrolloff = 0,
+  sidescrolloff = 0,
 }
 
 local function set_window_option(win, option, value)
@@ -119,10 +124,13 @@ end
 
 local function prompt_winbar(thread)
   render.setup_highlights()
-  local labels = metadata.composer_labels(thread)
-  local ctx = metadata.context_label(thread)
-  if ctx then
-    table.insert(labels, ctx)
+  local labels = {}
+  if not (composer_statusline.visible(thread) and composer_statusline.has_content(thread)) then
+    labels = metadata.composer_labels(thread)
+    local ctx = metadata.context_label(thread)
+    if ctx then
+      table.insert(labels, ctx)
+    end
   end
   local meta = #labels > 0 and (" | " .. table.concat(labels, " | ")) or ""
   return table.concat({
@@ -899,6 +907,7 @@ function M.enter_compose(thread_or_id, opts)
     history_winid = window.open_history(bufnr)
     state.set_buffer(thread_id, bufnr, history_winid)
     M.apply_window_options(history_winid, bufnr)
+    M.render(thread_id)
   end
   local prompt_bufnr = M.ensure_prompt(thread_id)
   restore_prompt_buffer(thread, prompt_bufnr)
@@ -961,6 +970,7 @@ function M.open(thread_id)
   thread.ui_state = "preview"
   thread.prompt_winid = nil
   M.apply_window_options(winid, bufnr)
+  M.render(thread_id)
   M.refresh_composer(thread)
   M.attach(bufnr)
   M.attach(prompt_bufnr)

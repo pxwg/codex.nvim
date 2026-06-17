@@ -13,6 +13,12 @@ local function schedule(thread_id)
   end
 end
 
+local function refresh_composer(thread)
+  if thread and thread.prompt_bufnr then
+    buffers.refresh_composer(thread)
+  end
+end
+
 local function append_limited(list, value, limit)
   table.insert(list, value)
   limit = limit or 100
@@ -279,8 +285,12 @@ end
 
 local function set_generation(thread, generation, message)
   if thread then
+    local changed = thread.generation ~= generation or thread.status_message ~= message
     thread.generation = generation
     thread.status_message = message
+    if changed then
+      refresh_composer(thread)
+    end
   end
 end
 
@@ -356,6 +366,7 @@ handlers["thread/status/changed"] = function(params)
   if thread then
     thread.status = util.status_label(params.status) or thread.status
     thread.status_payload = util.value(params.status)
+    refresh_composer(thread)
     schedule(params.threadId)
   end
 end
@@ -404,6 +415,7 @@ handlers["thread/settings/updated"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   thread.settings = params.threadSettings or params.settings or params
   state.apply_thread_settings(thread, thread.settings)
+  refresh_composer(thread)
   append_timeline(
     "thread/settings/updated",
     params,
@@ -417,6 +429,7 @@ handlers["thread/tokenUsage/updated"] = function(params)
   local thread = state.get_thread(params.threadId)
   if thread then
     thread.token_usage = params.tokenUsage or params.usage or params
+    refresh_composer(thread)
     schedule(params.threadId)
   end
 end

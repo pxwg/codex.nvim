@@ -58,6 +58,12 @@ local defaults = {
     composer = {
       min_height = 2,
       max_height = 0.33,
+      statusline = {
+        enabled = true,
+        default_visible = true,
+        widgets = true,
+        max_width = 160,
+      },
     },
   },
   render = {

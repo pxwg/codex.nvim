@@ -3,6 +3,7 @@ local events = require("coact.events")
 local activity_summary = require("coact.ui.activity_summary")
 local metadata = require("coact.ui.metadata")
 local providers = require("coact.providers")
+local statusline = require("coact.ui.statusline")
 local tool_renderers = require("coact.ui.tool_renderers")
 local util = require("coact.util")
 
@@ -89,6 +90,13 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "CoactBlockPlaceholderTitle", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "CoactBlockPlaceholderMeta", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactBlockPlaceholderHint", { default = true, link = "DiagnosticHint" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineTitle", { default = true, link = "Title" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineKey", { default = true, link = "Keyword" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineValue", { default = true, link = "Normal" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineState", { default = true, link = "DiagnosticOk" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineMessage", { default = true, link = "DiagnosticInfo" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineWidget", { default = true, link = "String" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineSeparator", { default = true, link = "Delimiter" })
 end
 
 M.setup_highlights = setup_highlights
@@ -307,6 +315,13 @@ end
 
 local function mark_spinner(thread, line)
   thread.spinner_mark = { line = line }
+end
+
+local function mark_statusline_chunks(thread, line, chunks)
+  table.insert(thread.statusline_marks, {
+    line = line,
+    chunks = chunks or {},
+  })
 end
 
 local function block_key(block, opts)
@@ -636,6 +651,26 @@ local function apply_stream_decoration_marks(thread, bufnr)
   end
 end
 
+local function apply_statusline_marks(thread, bufnr)
+  for _, mark in ipairs(thread.statusline_marks or {}) do
+    local col = 0
+    for _, chunk in ipairs(mark.chunks or {}) do
+      local text = tostring(chunk[1] or "")
+      local hl_group = chunk[2]
+      if text ~= "" and hl_group then
+        vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, col, {
+          end_col = col + #text,
+          hl_group = hl_group,
+          hl_mode = "combine",
+          priority = 1000,
+          strict = false,
+        })
+      end
+      col = col + #text
+    end
+  end
+end
+
 local function buffer_line_length(bufnr, lnum)
   local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
   return #line
@@ -830,12 +865,39 @@ local function apply_composer_token_marks(thread, bufnr)
   end
 end
 
-function M.apply_prompt_marks(_, bufnr)
+local function buffer_window_width(bufnr)
+  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.api.nvim_win_is_valid(winid) then
+      return vim.api.nvim_win_get_width(winid)
+    end
+  end
+  return nil
+end
+
+function M.apply_prompt_marks(thread, bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
   setup_highlights()
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  local status_opts = { width = buffer_window_width(bufnr) }
+  local above_status_lines = statusline.above_lines(thread, status_opts)
+  if #above_status_lines > 0 then
+    vim.api.nvim_buf_set_extmark(bufnr, ns, 0, 0, {
+      virt_lines = above_status_lines,
+      virt_lines_above = true,
+      priority = 1200,
+      strict = false,
+    })
+  end
+  local below_status_lines = statusline.below_lines(thread, status_opts)
+  if #below_status_lines > 0 then
+    vim.api.nvim_buf_set_extmark(bufnr, ns, math.max(0, vim.api.nvim_buf_line_count(bufnr) - 1), 0, {
+      virt_lines = below_status_lines,
+      priority = 1200,
+      strict = false,
+    })
+  end
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for offset, line in ipairs(lines) do
     local lnum0 = offset - 1
@@ -1605,6 +1667,27 @@ local function render_assistant_group(thread, lines, blocks, index)
   return index
 end
 
+local function chunks_text(chunks)
+  local parts = {}
+  for _, chunk in ipairs(chunks or {}) do
+    table.insert(parts, tostring(chunk[1] or ""))
+  end
+  return table.concat(parts)
+end
+
+local function render_history_statusline(thread, lines, bufnr)
+  local width = narrowest_buffer_text_width(bufnr)
+  local status_lines = statusline.history_lines(thread, { width = width })
+  if #status_lines == 0 then
+    return
+  end
+  for _, chunks in ipairs(status_lines) do
+    local line = add(lines, chunks_text(chunks))
+    mark_statusline_chunks(thread, line, chunks)
+  end
+  add(lines, "")
+end
+
 function M.render(thread)
   if not thread or not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) then
     return
@@ -1624,6 +1707,7 @@ function M.render(thread)
   thread.auto_closed_fence_lines = {}
   thread.reasoning_marks = {}
   thread.stream_decoration_marks = {}
+  thread.statusline_marks = {}
   thread.spinner_mark = nil
   thread.folds = {}
   thread.fold_levels = {}
@@ -1653,6 +1737,8 @@ function M.render(thread)
     add(lines, "")
   end
 
+  render_history_statusline(thread, lines, bufnr)
+
   build_fold_levels(thread)
 
   vim.bo[bufnr].modifiable = true
@@ -1663,6 +1749,7 @@ function M.render(thread)
   apply_placeholder_marks(thread, bufnr)
   apply_reasoning_marks(thread, bufnr)
   apply_stream_decoration_marks(thread, bufnr)
+  apply_statusline_marks(thread, bufnr)
   apply_spinner_marks(thread, bufnr)
   apply_composer_token_marks(thread, bufnr)
   vim.bo[bufnr].modifiable = false

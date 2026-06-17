@@ -256,6 +256,8 @@ function M.submit_text(text, thread_id, opts)
       resume = M.resume,
       pick_thread = M.pick_thread,
       show_status = M.show_status,
+      set_statusline_visible = M.set_statusline_visible,
+      toggle_statusline = M.toggle_statusline,
       stop = M.stop,
     })
   then
@@ -459,6 +461,30 @@ function M.show_status()
   return status
 end
 
+function M.set_statusline_visible(visible, thread_id)
+  setup_once()
+  local thread = state.get_thread(thread_id or buffers.get_thread_id() or state.active_thread_id)
+  if not thread then
+    util.notify("open a Coact thread before changing composer statusline visibility", vim.log.levels.WARN)
+    return false
+  end
+  thread.composer_statusline_visible = visible == true
+  buffers.refresh_composer(thread)
+  util.notify("composer statusline " .. (thread.composer_statusline_visible and "shown" or "hidden"))
+  return thread.composer_statusline_visible
+end
+
+function M.toggle_statusline(thread_id)
+  setup_once()
+  local thread = state.get_thread(thread_id or buffers.get_thread_id() or state.active_thread_id)
+  if not thread then
+    util.notify("open a Coact thread before changing composer statusline visibility", vim.log.levels.WARN)
+    return false
+  end
+  local visible = require("coact.ui.statusline").visible(thread)
+  return M.set_statusline_visible(not visible, thread.id)
+end
+
 function M.restart()
   rpc.stop()
   M.health()
@@ -550,6 +576,16 @@ local commands = {
   end,
   status = function()
     M.show_status()
+  end,
+  statusline = function(args)
+    local action = args[1] or "toggle"
+    if action == "show" or action == "on" then
+      M.set_statusline_visible(true)
+    elseif action == "hide" or action == "off" then
+      M.set_statusline_visible(false)
+    else
+      M.toggle_statusline()
+    end
   end,
   restart = function()
     M.restart()
@@ -647,6 +683,9 @@ function M.complete_command(arglead, line)
   local value_prefix = trailing_space and "" or (arglead or args[#args])
   if command == "attach" and #args <= 2 then
     return filtered(coact_buffer_ids(), value_prefix)
+  end
+  if command == "statusline" and #args <= 2 then
+    return filtered({ "toggle", "show", "hide", "on", "off" }, value_prefix)
   end
   if (command == "open" or command == "resume") and #args <= 2 then
     return filtered(loaded_thread_ids(), value_prefix)

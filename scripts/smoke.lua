@@ -783,6 +783,128 @@ do
       pi_state_thread.draft_lines and pi_state_thread.draft_lines[1] == "restored prompt",
       "Pi set_editor_text should restore the current composer prompt"
     )
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-title-smoke",
+        method = "setTitle",
+        title = "pi - smoke",
+      }, pi_ui_rpc),
+      "Pi provider should handle extension title updates"
+    )
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-status-smoke",
+        method = "setStatus",
+        statusKey = "model",
+        statusText = "\27[36m🤖 gpt-4o\27[0m",
+      }, pi_ui_rpc),
+      "Pi provider should handle extension status updates"
+    )
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-widget-smoke",
+        method = "setWidget",
+        widgetKey = "plan",
+        widgetLines = { "step 1", "step 2" },
+        widgetPlacement = "belowEditor",
+      }, pi_ui_rpc),
+      "Pi provider should handle extension widget updates"
+    )
+    assert(
+      pi_state_thread.provider_ui
+        and pi_state_thread.provider_ui.title == "pi - smoke"
+        and pi_state_thread.provider_ui.statuses.model
+        and pi_state_thread.provider_ui.statuses.model:match("gpt%-4o")
+        and pi_state_thread.provider_ui.widgets.belowEditor.plan.lines[1] == "step 1",
+      "Pi extension UI state should be cached on the active thread"
+    )
+    do
+      local saved_active_thread_id = state.active_thread_id
+      local saved_runtime_thread_id = pi_provider._runtime.current_thread_id
+      local saved_runtime_ui = pi_provider._runtime.provider_ui
+      pi_provider._runtime.provider_ui = nil
+      pi_provider._runtime.current_thread_id = "pi:session"
+      state.ensure_thread("pi:session").provider_ui = {
+        statuses = { ["codex-fast-mode"] = "fast:on" },
+        widgets = { aboveEditor = {}, belowEditor = {} },
+      }
+      pi_provider._remember_state({ sessionId = "migrated-status" })
+      local migrated_status_thread = state.get_thread("pi:migrated-status")
+      assert(
+        migrated_status_thread
+          and migrated_status_thread.provider_ui
+          and migrated_status_thread.provider_ui.statuses["codex-fast-mode"] == "fast:on",
+        "Pi extension statuses observed before concrete session state should migrate to the active session thread"
+      )
+      pi_provider._runtime.provider_ui = saved_runtime_ui
+      pi_provider._runtime.current_thread_id = saved_runtime_thread_id
+      state.active_thread_id = saved_active_thread_id
+    end
+    local pi_statusline = require("coact.ui.statusline")
+    local empty_pi_status_lines =
+      pi_statusline.above_lines(state.ensure_thread("pi:empty-statusline", { title = "Pi session" }))
+    assert(
+      vim.inspect(empty_pi_status_lines):match("Pi session") and vim.inspect(empty_pi_status_lines):match("state"),
+      "Pi composer statusline should show a non-empty fallback for sparse Pi thread state"
+    )
+    local pi_status_lines = pi_statusline.above_lines(pi_state_thread)
+    assert(#pi_status_lines >= 3, "Pi composer statusline should render title, summary, and extension status lines")
+    local pi_status_text = vim.inspect(pi_status_lines)
+    assert(
+      pi_status_text:match("pi %- smoke") and pi_status_text:match("model") and pi_status_text:match("🤖 gpt%-4o"),
+      "Pi composer statusline should expose sanitized extension status text"
+    )
+    local pi_wrapped_status_lines = pi_statusline.above_lines(pi_state_thread, { width = 44 })
+    assert(
+      #pi_wrapped_status_lines >= 4 and vim.inspect(pi_wrapped_status_lines):match("state"),
+      "Pi composer statusline should wrap structured fields for narrow composers"
+    )
+    local pi_widget_lines = pi_statusline.below_lines(pi_state_thread)
+    assert(vim.inspect(pi_widget_lines):match("step 1"), "Pi below-editor widgets should render below the composer")
+    local pi_buffers = require("coact.buffers")
+    local pi_history_buf = pi_buffers.ensure("pi:smoke-session")
+    pi_buffers.render("pi:smoke-session")
+    local pi_history_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
+    assert(
+      pi_history_text:find("╭─ Pi status", 1, true) and pi_history_text:find("🤖 gpt-4o", 1, true),
+      "Pi composer statusline should also render as a status card at the bottom of the history buffer"
+    )
+    local opened_pi_history_buf, opened_pi_history_win = pi_buffers.open("pi:smoke-session")
+    local opened_pi_history_width = vim.api.nvim_win_get_width(opened_pi_history_win)
+    local opened_pi_history_lines = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
+    local saw_opened_status = false
+    for _, line in ipairs(opened_pi_history_lines) do
+      if line:find("Pi status", 1, true) then
+        saw_opened_status = true
+      end
+      if saw_opened_status then
+        assert(
+          vim.fn.strdisplaywidth(line) <= opened_pi_history_width,
+          "opening history should re-render status card to the actual window width"
+        )
+      end
+    end
+    pcall(vim.api.nvim_win_close, opened_pi_history_win, true)
+    state.active_thread_id = "pi:smoke-session"
+    local pi_prompt_buf = pi_buffers.ensure_prompt("pi:smoke-session")
+    require("coact.ui.render").apply_prompt_marks(pi_state_thread, pi_prompt_buf)
+    local coact_ns = vim.api.nvim_get_namespaces()["coact.nvim"]
+    local pi_prompt_marks = vim.api.nvim_buf_get_extmarks(pi_prompt_buf, coact_ns, 0, -1, { details = true })
+    local saw_status_virt_lines = false
+    for _, mark in ipairs(pi_prompt_marks) do
+      if mark[4] and mark[4].virt_lines then
+        saw_status_virt_lines = true
+        break
+      end
+    end
+    assert(saw_status_virt_lines, "composer prompt marks should include statusline virtual lines")
+    require("coact").set_statusline_visible(false, "pi:smoke-session")
+    assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide the composer statusline")
+    require("coact").set_statusline_visible(true, "pi:smoke-session")
+    assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show the composer statusline")
   end)()
   local pi_cwd = require("coact.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")
@@ -1337,6 +1459,8 @@ assert(
   _G.__coact_smoke_view.info and _G.__coact_smoke_view.info.botline == _G.__coact_smoke_view.lines,
   "idle preview refresh should keep following the latest transcript lines"
 )
+_G.__coact_smoke_scrolloff = vim.o.scrolloff
+vim.o.scrolloff = 5
 vim.api.nvim_set_current_win(context_thread.winid)
 vim.api.nvim_feedkeys("i", "x", false)
 vim.wait(1000, function()
@@ -1351,6 +1475,11 @@ assert(
   vim.wo[context_thread.prompt_winid].winbar:match("Coact input"),
   "composer window should render input metadata in its winbar"
 )
+assert(
+  vim.wo[context_thread.prompt_winid].scrolloff == 0,
+  "composer should clear inherited scrolloff for virtual status lines"
+)
+vim.o.scrolloff = _G.__coact_smoke_scrolloff
 local initial_composer_height = _G.__coact_smoke_composer_text_area_height(context_thread.prompt_winid)
 vim.api.nvim_buf_set_lines(context_thread.prompt_bufnr, 0, -1, false, {
   "semantic first line",

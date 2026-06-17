@@ -54,7 +54,7 @@ local commands = {
   { name = "review", detail = "Ask Codex to review the working tree", category = "workspace" },
   { name = "status", detail = "Display session configuration and token usage", category = "status" },
   { name = "debug-config", detail = "Print config layer and requirements diagnostics", category = "status" },
-  { name = "statusline", detail = "Configure CLI status-line fields", category = "cli" },
+  { name = "statusline", detail = "Show or hide the composer statusline", category = "ui" },
   { name = "title", detail = "Configure CLI terminal title fields", category = "cli" },
   { name = "theme", detail = "Choose a syntax-highlighting theme", category = "ui" },
   { name = "settings", detail = "Open coact.nvim settings", category = "settings" },
@@ -105,7 +105,7 @@ local return_forms = {
   review = "notify(review/start)",
   status = "page(config/read + account/rateLimits/read + local thread status)",
   ["debug-config"] = "page(config/read + configRequirements/read)",
-  statusline = "notify(unsupported in coact.nvim)",
+  statusline = "action(local composer statusline) -> notify",
   title = "notify(unsupported in coact.nvim)",
   theme = "notify(Neovim colorscheme-owned)",
   settings = "select(local settings menu)",
@@ -1667,6 +1667,18 @@ local handlers = {
   status = function(args, actions, thread_id)
     show_status(actions, thread_id)
   end,
+  statusline = function(args, actions)
+    local action = args[1] or "toggle"
+    if (action == "show" or action == "on") and actions.set_statusline_visible then
+      actions.set_statusline_visible(true)
+    elseif (action == "hide" or action == "off") and actions.set_statusline_visible then
+      actions.set_statusline_visible(false)
+    elseif actions.toggle_statusline then
+      actions.toggle_statusline()
+    else
+      return notify_result("composer statusline toggle is unavailable", vim.log.levels.WARN)
+    end
+  end,
   ["debug-config"] = function(args, actions)
     show_debug_config(actions)
   end,
@@ -1696,7 +1708,6 @@ for _, name in ipairs({
   "init",
   "plan",
   "ps",
-  "statusline",
   "title",
 }) do
   handlers[name] = handlers[name] or not_supported(name)

@@ -119,6 +119,12 @@ require("coact").setup({
     composer = {
       min_height = 2,
       max_height = 0.33,
+      statusline = {
+        enabled = true,
+        default_visible = true,
+        widgets = true,
+        max_width = 160,
+      },
     },
   },
   render = {
@@ -188,7 +194,7 @@ require("coact").setup({
 })
 ```
 
-The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to Pi `prompt` commands, maps `/model` and reasoning changes to Pi model/thinking commands, and normalizes Pi streaming, thinking, and tool events into the same renderer blocks used by the rest of coact.nvim. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary Pi extension into only the Pi process started by coact.nvim. That extension overrides Pi's built-in `edit` and `write` tools, turns them into Neovim-reviewed file-change proposals, and then lets the existing in-buffer patch review write accepted hunks. It does not install or modify user Pi extensions or settings.
+The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to Pi `prompt` commands, maps `/model` and reasoning changes to Pi model/thinking commands, and normalizes Pi streaming, thinking, and tool events into the same renderer blocks used by the rest of coact.nvim. Pi extension UI status requests (`ctx.ui.setStatus`, `setWidget`, and `setTitle`) are mirrored into the composer statusline so Pi-side status customizations remain visible in Neovim without overloading the split separator. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary Pi extension into only the Pi process started by coact.nvim. That extension overrides Pi's built-in `edit` and `write` tools, turns them into Neovim-reviewed file-change proposals, and then lets the existing in-buffer patch review write accepted hunks. It does not install or modify user Pi extensions or settings.
 
 ## Commands
 
@@ -203,6 +209,7 @@ The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to 
 :Coact detail
 :Coact health
 :Coact status
+:Coact statusline [toggle|show|hide]
 :Coact restart
 :Coact attach [all]
 :Coact add-buffer
@@ -212,6 +219,8 @@ The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to 
 Opening a provider thread starts in preview state with a read-only `coact-history` transcript buffer using the full UI height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, or `S` to open the unnamed `coact-input` composer below it. Type in the composer and press `<C-s>` or normal-mode `<CR>` to submit; normal-mode `q` closes the composer and returns to preview without discarding the draft. The composer grows with wrapped input up to `ui.composer.max_height`, then scrolls internally. The composer buffer is left unnamed rather than using a `coact://` URI so path-oriented completion sources keep a normal editing context. Use `za` on a placeholder block to expand or collapse reasoning/tool/agent details. Use `K` to open the full block detail buffer. During streaming, transcript windows near the bottom keep following the conversation; scrolling away suspends that follow state for the window.
 
 `:Coact status` reports whether the provider process is running, current and active thread ids, pending request counts, and the current thread generation/status. The same data is available programmatically through `require("coact").status()` for statuslines or custom integrations.
+
+`:Coact statusline [toggle|show|hide]` controls the Coact statusline. It is enabled by default via `ui.composer.statusline` and currently mirrors Pi RPC extension UI status, title, and widget updates when the Pi provider is active. The same structured status is rendered as a compact status card at the bottom of the history buffer after the chat transcript, and the composer mirrors it with virtual lines. Status fields wrap using the target window width and expose `CoactStatusLine*` highlight groups for colorscheme/user overrides.
 
 `:Coact attach` reruns the configured buffer attach hook for the current thread buffer. `:Coact attach all` reruns it for every loaded transcript or composer buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("coact").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after coact.nvim creates a chat buffer.
 

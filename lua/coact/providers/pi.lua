@@ -21,6 +21,7 @@ local M = {
       settings = true,
       skills = true,
       status = true,
+      statusline = true,
       stop = true,
       tree = true,
     },
@@ -53,6 +54,7 @@ local runtime = {
   active_turn_id = nil,
   last_turn_id = nil,
   turn_seq = 0,
+  provider_ui = nil,
   tool_output = {},
   tool_args = {},
   tool_calls = {},
@@ -228,14 +230,69 @@ local function state_thread_id(state)
   return state and state.sessionId and ("pi:" .. tostring(state.sessionId)) or runtime.current_thread_id or "pi:session"
 end
 
+local function empty_provider_ui(ui)
+  if type(ui) ~= "table" then
+    return true
+  end
+  local statuses = type(ui.statuses) == "table" and ui.statuses or {}
+  local widgets = type(ui.widgets) == "table" and ui.widgets or {}
+  return vim.tbl_isempty(statuses)
+    and vim.tbl_isempty(type(widgets.aboveEditor) == "table" and widgets.aboveEditor or {})
+    and vim.tbl_isempty(type(widgets.belowEditor) == "table" and widgets.belowEditor or {})
+    and util.value(ui.title) == nil
+end
+
+local function provider_ui_store()
+  runtime.provider_ui = runtime.provider_ui or {}
+  runtime.provider_ui.statuses = runtime.provider_ui.statuses or {}
+  runtime.provider_ui.widgets = runtime.provider_ui.widgets or {
+    aboveEditor = {},
+    belowEditor = {},
+  }
+  runtime.provider_ui.widgets.aboveEditor = runtime.provider_ui.widgets.aboveEditor or {}
+  runtime.provider_ui.widgets.belowEditor = runtime.provider_ui.widgets.belowEditor or {}
+  return runtime.provider_ui
+end
+
+local function import_thread_provider_ui(thread)
+  if not thread or empty_provider_ui(runtime.provider_ui) and empty_provider_ui(thread.provider_ui) then
+    return
+  end
+  if empty_provider_ui(runtime.provider_ui) and type(thread.provider_ui) == "table" then
+    runtime.provider_ui = thread.provider_ui
+    provider_ui_store()
+  end
+end
+
+local function attach_provider_ui(thread_id)
+  if not thread_id or empty_provider_ui(runtime.provider_ui) then
+    return
+  end
+  local ok, coact_state = pcall(require, "coact.state")
+  if not ok then
+    return
+  end
+  local thread = coact_state.ensure_thread(thread_id)
+  import_thread_provider_ui(thread)
+  thread.provider_ui = provider_ui_store()
+end
+
 function M._remember_state(state)
   if type(state) ~= "table" then
     return nil
   end
+  local previous_thread_id = runtime.current_thread_id
   runtime.session_id = util.value(state.sessionId) or runtime.session_id
   runtime.session_file = util.value(state.sessionFile) or runtime.session_file
   runtime.session_name = util.value(state.sessionName) or runtime.session_name
   runtime.current_thread_id = state_thread_id(state)
+  if previous_thread_id and previous_thread_id ~= runtime.current_thread_id then
+    local ok, coact_state = pcall(require, "coact.state")
+    if ok then
+      import_thread_provider_ui(coact_state.get_thread(previous_thread_id))
+    end
+  end
+  attach_provider_ui(runtime.current_thread_id)
   return runtime.current_thread_id
 end
 
@@ -377,6 +434,7 @@ local function thread_from_state(state, attrs)
     model = model_id(model),
     modelProvider = util.value(model.provider),
     reasoningEffort = util.value(state.thinkingLevel),
+    provider_ui = not empty_provider_ui(runtime.provider_ui) and provider_ui_store() or nil,
   }
 end
 
@@ -1423,6 +1481,98 @@ local function extension_prompt(message, fallback)
   return util.value(message.title) or util.value(message.message) or fallback
 end
 
+local function provider_ui_thread()
+  local ok, coact_state = pcall(require, "coact.state")
+  if not ok then
+    return nil
+  end
+  return coact_state.ensure_thread(current_thread_id())
+end
+
+local function refresh_provider_ui(thread)
+  if not thread then
+    return
+  end
+  local ok, buffers = pcall(require, "coact.buffers")
+  if ok then
+    if buffers.schedule_render then
+      buffers.schedule_render(thread.id)
+    end
+    if buffers.refresh_composer then
+      buffers.refresh_composer(thread)
+    end
+  end
+end
+
+local function ensure_provider_ui(thread)
+  local ui = provider_ui_store()
+  if thread then
+    thread.provider_ui = ui
+  end
+  return ui
+end
+
+local function handle_set_status(message)
+  local key = util.value(message.statusKey) or "status"
+  key = tostring(key)
+  if key == "" then
+    key = "status"
+  end
+  local thread = provider_ui_thread()
+  if not thread then
+    return true
+  end
+  local ui = ensure_provider_ui(thread)
+  local text = util.value(message.statusText)
+  if text == nil or text == "" then
+    ui.statuses[key] = nil
+  else
+    ui.statuses[key] = tostring(text)
+  end
+  refresh_provider_ui(thread)
+  return true
+end
+
+local function handle_set_widget(message)
+  local key = util.value(message.widgetKey) or "widget"
+  key = tostring(key)
+  if key == "" then
+    key = "widget"
+  end
+  local placement = util.value(message.widgetPlacement) == "belowEditor" and "belowEditor" or "aboveEditor"
+  local thread = provider_ui_thread()
+  if not thread then
+    return true
+  end
+  local ui = ensure_provider_ui(thread)
+  local lines = message.widgetLines
+  if type(lines) ~= "table" or #lines == 0 then
+    ui.widgets.aboveEditor[key] = nil
+    ui.widgets.belowEditor[key] = nil
+  else
+    local normalized = {}
+    for _, line in ipairs(lines) do
+      table.insert(normalized, tostring(line))
+    end
+    ui.widgets.aboveEditor[key] = nil
+    ui.widgets.belowEditor[key] = nil
+    ui.widgets[placement][key] = { lines = normalized }
+  end
+  refresh_provider_ui(thread)
+  return true
+end
+
+local function handle_set_title(message)
+  local thread = provider_ui_thread()
+  if not thread then
+    return true
+  end
+  local ui = ensure_provider_ui(thread)
+  ui.title = util.value(message.title)
+  refresh_provider_ui(thread)
+  return true
+end
+
 function M.handle_raw_message(message, rpc)
   if type(message) ~= "table" or message.type ~= "extension_ui_request" then
     return false
@@ -1495,8 +1645,14 @@ function M.handle_raw_message(message, rpc)
     end
     return true
   end
-  if message.method == "setTitle" or message.method == "setStatus" or message.method == "setWidget" then
-    return true
+  if message.method == "setStatus" then
+    return handle_set_status(message)
+  end
+  if message.method == "setWidget" then
+    return handle_set_widget(message)
+  end
+  if message.method == "setTitle" then
+    return handle_set_title(message)
   end
   extension_response(rpc, message, { cancelled = true })
   return true
