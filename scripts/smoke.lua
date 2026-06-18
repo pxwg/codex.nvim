@@ -2077,7 +2077,7 @@ do
       and hint_text:match('","')
       and hint_text:match('"n"')
       and hint_text:match('"p"')
-      and hint_text:match("accept")
+      and hint_text:match("approve")
       and hint_text:match("reject")
       and hint_text:match("next")
       and hint_text:match("prev")
@@ -2090,6 +2090,51 @@ vim.wait(1000, function()
   return session_done
 end, 20)
 assert(vim.fn.readfile(session_file)[2] == "beta", "rejected patch block should restore original file content")
+do
+  local approve_comment_file = vim.fs.joinpath(session_dir, "approve-comment.txt")
+  vim.fn.writefile({ "old" }, approve_comment_file)
+  local approve_comment_patch = table.concat({
+    "diff --git a/approve-comment.txt b/approve-comment.txt",
+    "--- a/approve-comment.txt",
+    "+++ b/approve-comment.txt",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+  }, "\n")
+  local approve_comment_summary = nil
+  local approve_comment_session = patch_session.open({
+    cwd = session_dir,
+    changes = dynamic_tools._changes_from_unified_patch(approve_comment_patch),
+    on_complete = function(summary, success)
+      assert(success, summary)
+      approve_comment_summary = summary
+    end,
+  })
+  assert(approve_comment_session and approve_comment_session.blocks[1], "approval comment smoke should open review")
+  local approve_comment_prompted = false
+  local original_input = vim.ui.input
+  vim.ui.input = function(opts, callback)
+    approve_comment_prompted = true
+    assert(opts.prompt and opts.prompt:match("Approval comment"), "accept key should prompt for an approval comment")
+    callback("looks good to me")
+  end
+  local accept_mapping = vim.fn.maparg(".", "n", false, true)
+  assert(type(accept_mapping.callback) == "function", "accept key should be a Lua callback")
+  local accept_ok, accept_err = pcall(accept_mapping.callback)
+  vim.ui.input = original_input
+  assert(accept_ok, accept_err)
+  vim.wait(1000, function()
+    return approve_comment_summary ~= nil
+  end, 20)
+  assert(approve_comment_prompted, "accept key should prompt before approving a patch block")
+  assert(
+    approve_comment_summary
+      and approve_comment_summary:match("USER APPROVAL COMMENTS")
+      and approve_comment_summary:match("looks good to me"),
+    "approved patch summary should include the user's approval comment"
+  )
+  assert(vim.fn.readfile(approve_comment_file)[1] == "new", "commented approval should still write accepted edit")
+end
 do
   local previous_active_thread_id = require("coact.state").active_thread_id
   vim.cmd("tabnew")

@@ -284,9 +284,9 @@ Review keys:
 
 The review buffer indexes file changes and unified-diff hunk headers with extmarks, so large patches can be inspected without manually scanning the whole markdown document. Outside pair mode, the active provider still owns the final file-change application after approval.
 
-`edit.mode = "pair"` is the default. With the Codex provider, coact.nvim tells the app-server to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Accepting the review writes accepted changed blocks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
+`edit.mode = "pair"` is the default. With the Codex provider, coact.nvim tells the app-server to use the native `apply_patch` tool and injects a stable `PreToolUse` hook into the process it starts. The plugin registers trust for that exact hook hash through Codex config, while per-session Neovim RPC details are passed through environment variables, so pair mode does not need `--dangerously-bypass-hook-trust`. That hook previews the patch in the affected Neovim file buffers before the native tool completes. Approving the review writes approved changed blocks through the same path as `nvim.apply_patch`, then returns `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex native `apply_patch` can complete without repeating the real edit; rejecting returns `permissionDecision: "deny"` with the user's reason. Follow-up app-server apply_patch permission and file-change approvals are automatically accepted only when their item id was already reviewed by the Neovim hook, so pair mode does not require `--dangerously-bypass-approvals-and-sandbox`.
 
-The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` accepts the current changed block, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` accepts the rest, `gr` rejects the rest, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before accepting; coact.nvim writes the final accepted buffer state and returns the review summary to the provider as hook context, including rejection reasons and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
+The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` approves the current changed block and prompts for an approval comment, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` approves the rest with one approval-comment prompt, `gr` rejects the rest with a reason, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before approving; coact.nvim writes the final approved buffer state and returns the review summary to the provider as hook context, including approval comments, rejection reasons, and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
 
 For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result.
 
@@ -294,16 +294,16 @@ For the Pi provider, pair mode uses a process-local extension override instead o
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 
-- `.`: accept current changed block
+- `.`: approve current changed block and prompt for a comment
 - `,`: reject current changed block and prompt for a reason
-- `ga`: accept all remaining changed blocks
+- `ga`: approve all remaining changed blocks and prompt for one comment
 - `gr`: reject all remaining changed blocks and prompt for a reason
 - `gA`: use Neovim auto-apply for the session
 - `q`: cancel the review
 - `n` / `p`: jump between pending changed blocks
 - `?`: show review keys
 
-Rejected changed-block reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to the provider as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
+Approval comments, rejected changed-block reasons, partial-apply status, final file state, a final diff, and the target buffer's `nvim.diagnostics` output are returned to the provider as the dynamic tool result so the agent can continue from the user's feedback when that legacy tool is explicitly enabled.
 
 ## Events
 

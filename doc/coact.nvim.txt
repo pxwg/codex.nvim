@@ -357,8 +357,8 @@ hook into the process it starts. The plugin registers trust for that exact hook
 hash through Codex config, while per-session Neovim RPC details are passed
 through environment variables, so pair mode does not need
 `--dangerously-bypass-hook-trust`. The hook previews the patch in the affected
-Neovim file buffers before the native tool completes. Accepting the review writes
-accepted changed blocks through the same path as `nvim.apply_patch`, then returns
+Neovim file buffers before the native tool completes. Approving the review writes
+approved changed blocks through the same path as `nvim.apply_patch`, then returns
 `permissionDecision: "allow"` with a no-op `updatedInput.command` so Codex
 native `apply_patch` can complete without repeating the real edit; rejecting
 returns `permissionDecision: "deny"` with the user's reason. Follow-up
@@ -369,9 +369,9 @@ pair mode does not require
 
 The pair-mode native review uses the file-buffer changed-block controls:
 >
-  .     accept current changed block
+  .     approve current changed block and prompt for a comment
   ,     reject current changed block and prompt for a reason
-  ga    accept all remaining changed blocks
+  ga    approve all remaining changed blocks and prompt for one comment
   gr    reject all remaining changed blocks and prompt for a reason
   q     cancel review
   n     jump to next pending changed block
@@ -382,12 +382,12 @@ The review display shows short-key hints above the current changed block, wraps
 long before-lines into readable virtual lines, and highlights changed
 characters inside the current replacement block when it fits the
 `edit.review.char_diff_*` budget.
-You can edit the previewed file buffer before accepting; coact.nvim writes the
-final accepted buffer state and returns the review summary to the provider as
-hook context, including rejection reasons and any diff between the provider
-proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch`
-dynamic tool implementation remains for compatibility and internal tests, but
-it is no longer exposed by default in pair mode.
+You can edit the previewed file buffer before approving; coact.nvim writes the
+final approved buffer state and returns the review summary to the provider as
+hook context, including approval comments, rejection reasons, and any diff
+between the provider proposal and the final Neovim-reviewed state. The previous
+`nvim.apply_patch` dynamic tool implementation remains for compatibility and
+internal tests, but it is no longer exposed by default in pair mode.
 
 For the Pi provider, pair mode uses a process-local extension override instead
 of Pi's global extension configuration. coact.nvim appends `--extension
@@ -405,9 +405,9 @@ rejected while the tool is not exposed. The legacy option
 
 For the legacy/internal `nvim.apply_patch` buffer review:
 >
-  .     accept current changed block
+  .     approve current changed block and prompt for a comment
   ,     reject current changed block and prompt for a reason
-  ga    accept all remaining changed blocks
+  ga    approve all remaining changed blocks and prompt for one comment
   gr    reject all remaining changed blocks and prompt for a reason
   gA    use Neovim auto-apply for the session
   q     cancel the review
@@ -415,10 +415,10 @@ For the legacy/internal `nvim.apply_patch` buffer review:
   p     previous pending changed block
   ?     show review keys
 <
-Rejected changed-block reasons, partial-apply status, final file state, a final diff, and
-the target buffer's `nvim.diagnostics` output are returned to the provider as
-the dynamic tool result so the agent can continue from the user's feedback when
-that legacy tool is explicitly enabled.
+Approval comments, rejected changed-block reasons, partial-apply status, final
+file state, a final diff, and the target buffer's `nvim.diagnostics` output are
+returned to the provider as the dynamic tool result so the agent can continue
+from the user's feedback when that legacy tool is explicitly enabled.
 
 ==============================================================================
 TUI RENDERING                                          *coact.nvim-tui*

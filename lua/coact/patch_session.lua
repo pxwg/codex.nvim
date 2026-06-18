@@ -840,11 +840,11 @@ local function review_hint_lines(session, block, width)
     vim.list_extend(current, action)
   end
 
-  push_action("accept", "accept")
+  push_action("accept", "approve/comment")
   push_action("reject", "reject")
   push_action("next", "next")
   push_action("prev", "prev")
-  push_action("accept_all", "accept rest")
+  push_action("accept_all", "approve rest")
   push_action("reject_all", "reject rest")
   if session.on_auto_apply then
     push_action("auto_apply", "auto")
@@ -1276,6 +1276,11 @@ local function wait_for_fresh_diagnostics(session)
   pcall(vim.api.nvim_del_augroup_by_id, group)
 end
 
+local function approval_comment(value)
+  local comment = util.trim(value or "")
+  return comment ~= "" and comment or nil
+end
+
 local function build_summary(session, write_error)
   local accepted, rejected, pending = session_block_counts(session)
 
@@ -1302,6 +1307,19 @@ local function build_summary(session, write_error)
         file_pending
       )
     )
+  end
+
+  local approval_comments = {}
+  for _, block in ipairs(session.blocks or {}) do
+    local comment = approval_comment(block.comment)
+    if block.status == "accepted" and comment then
+      table.insert(approval_comments, ("- %s: %s"):format(block_label(block), comment))
+    end
+  end
+  if #approval_comments > 0 then
+    table.insert(lines, "")
+    table.insert(lines, "## USER APPROVAL COMMENTS")
+    vim.list_extend(lines, approval_comments)
   end
 
   if rejected > 0 then
@@ -1400,21 +1418,22 @@ local function finish_after_decision(session)
   end
 end
 
-local function accept_block_without_finish(block)
+local function accept_block_without_finish(block, comment)
   if not block or block.status then
     return
   end
   block.status = "accepted"
+  block.comment = approval_comment(comment)
   remove_block_marks(block)
   update_hunk_status(block.hunk)
 end
 
-local function accept_block(session, block)
+local function accept_block(session, block, comment)
   block = block or current_block(session)
   if not block or block.status then
     return
   end
-  accept_block_without_finish(block)
+  accept_block_without_finish(block, comment)
   finish_after_decision(session)
 end
 
@@ -1447,13 +1466,13 @@ local function reject_block(session, block, reason)
   finish_after_decision(session)
 end
 
-local function accept_hunk(session, hunk)
+local function accept_hunk(session, hunk, comment)
   hunk = hunk or (current_block(session) and current_block(session).hunk)
   if not hunk then
     return
   end
   for _, block in ipairs(hunk.changed_blocks or {}) do
-    accept_block_without_finish(block)
+    accept_block_without_finish(block, comment)
   end
   finish_after_decision(session)
 end
@@ -1476,19 +1495,44 @@ local function reject_hunk(session, hunk, reason)
   finish_after_decision(session)
 end
 
+local function prompt_accept(session, block)
+  block = block or current_block(session)
+  if not block or block.status then
+    return
+  end
+  vim.ui.input({ prompt = "Approval comment for this Coact patch block (optional): " }, function(comment)
+    if comment == nil then
+      return
+    end
+    accept_block(session, block, comment)
+  end)
+end
+
 local function prompt_reject(session, block)
   vim.ui.input({ prompt = "Why reject this Coact patch block? " }, function(reason)
     reject_block(session, block, reason)
   end)
 end
 
-local function accept_all(session)
+local function accept_all(session, comment)
   for _, block in ipairs(session.blocks or {}) do
     if not block.status then
-      accept_block_without_finish(block)
+      accept_block_without_finish(block, comment)
     end
   end
   complete(session, false)
+end
+
+local function prompt_accept_all(session)
+  if #pending_blocks(session) == 0 then
+    return
+  end
+  vim.ui.input({ prompt = "Approval comment for remaining Coact patch blocks (optional): " }, function(comment)
+    if comment == nil then
+      return
+    end
+    accept_all(session, comment)
+  end)
 end
 
 local function reject_all(session)
@@ -1527,11 +1571,11 @@ local function show_help(session)
   local lines = {
     "Coact Patch Review",
     "",
-    ("  %s  accept current change"):format(keymap_label(session, "accept")),
+    ("  %s  approve current change with a comment"):format(keymap_label(session, "accept")),
     ("  %s  reject current change with a reason"):format(keymap_label(session, "reject")),
     ("  %s  next pending change"):format(keymap_label(session, "next")),
     ("  %s  previous pending change"):format(keymap_label(session, "prev")),
-    ("  %s  accept remaining changes"):format(keymap_label(session, "accept_all")),
+    ("  %s  approve remaining changes with a comment"):format(keymap_label(session, "accept_all")),
     ("  %s  reject remaining changes"):format(keymap_label(session, "reject_all")),
     ("  %s  cancel review"):format(keymap_label(session, "cancel")),
   }
@@ -1582,14 +1626,14 @@ local function setup_keymaps(session, bufnr)
     end
   end
   set("accept", function()
-    accept_block(session)
-  end, "Accept Coact patch block")
+    prompt_accept(session, current_block(session))
+  end, "Approve Coact patch block with comment")
   set("reject", function()
     prompt_reject(session, current_block(session))
   end, "Reject Coact patch block")
   set("accept_all", function()
-    accept_all(session)
-  end, "Accept all Coact patch blocks")
+    prompt_accept_all(session)
+  end, "Approve all Coact patch blocks with comment")
   set("reject_all", function()
     reject_all(session)
   end, "Reject all Coact patch blocks")
