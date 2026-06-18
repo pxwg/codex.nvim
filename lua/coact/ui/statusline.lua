@@ -467,7 +467,7 @@ end
 
 local function history_row(item, key_width, opts)
   local width = history_width(opts)
-  local key = pad_display(item.key, key_width)
+  local key = pad_display(truncate_to_width(item.key, key_width), key_width)
   local prefix_width = display_width("│ ") + key_width + 2
   local value_width = math.max(1, width - prefix_width)
   return {
@@ -476,6 +476,11 @@ local function history_row(item, key_width, opts)
     { "  ", "CoactStatusLineSeparator" },
     { truncate_to_width(item.value, value_width), item.value_hl or "CoactStatusLineValue" },
   }
+end
+
+local function history_hint_line(opts)
+  local text = truncate_to_width("g? help  gs details  gS hide status", history_width(opts))
+  return { { text, "CoactStatusLineHint" } }
 end
 
 local function token_usage_text(thread)
@@ -536,6 +541,7 @@ function M.history_lines(thread, opts)
     table.insert(lines, history_row(item, key_width, opts))
   end
   table.insert(lines, border_line(nil, opts, true))
+  table.insert(lines, history_hint_line(opts))
   return lines
 end
 
@@ -564,6 +570,77 @@ end
 
 function M.line_count(thread, opts)
   return #M.above_lines(thread, opts) + #M.below_lines(thread, opts)
+end
+
+local function detail_thread(thread)
+  return thread or state.thread_for_buf(0) or state.get_thread(state.active_thread_id)
+end
+
+function M.detail_lines(thread)
+  thread = detail_thread(thread)
+  if not thread then
+    return { "# Coact Status", "", "No active Coact thread." }
+  end
+  local lines = {
+    "# " .. provider_title(thread) .. " status",
+    "",
+    "thread: " .. tostring(thread.id or "unknown"),
+  }
+  if thread.cwd then
+    table.insert(lines, "cwd: " .. tostring(thread.cwd))
+  end
+  table.insert(lines, "")
+  table.insert(lines, "## Summary")
+  table.insert(lines, "")
+  for _, item in ipairs(history_items(thread)) do
+    table.insert(lines, ("- **%s**: %s"):format(item.key, item.value))
+  end
+  if type(thread.provider_ui) == "table" then
+    table.insert(lines, "")
+    table.insert(lines, "## Provider UI")
+    table.insert(lines, "")
+    table.insert(lines, "```lua")
+    for _, line in ipairs(vim.split(vim.inspect(thread.provider_ui), "\n", { plain = true })) do
+      table.insert(lines, line)
+    end
+    table.insert(lines, "```")
+  end
+  return lines
+end
+
+function M.toggle_detail(thread)
+  thread = detail_thread(thread)
+  if not thread then
+    util.notify("no active Coact thread", vim.log.levels.WARN)
+    return nil
+  end
+  if thread.status_detail_winid and vim.api.nvim_win_is_valid(thread.status_detail_winid) then
+    pcall(vim.api.nvim_win_close, thread.status_detail_winid, true)
+    thread.status_detail_winid = nil
+    return nil
+  end
+  local bufnr = thread.status_detail_bufnr
+  if not (bufnr and vim.api.nvim_buf_is_valid(bufnr)) then
+    bufnr = vim.api.nvim_create_buf(false, true)
+    thread.status_detail_bufnr = bufnr
+    vim.api.nvim_buf_set_name(bufnr, "coact://status/" .. tostring(thread.id))
+    vim.bo[bufnr].buftype = "nofile"
+    vim.bo[bufnr].bufhidden = "wipe"
+    vim.bo[bufnr].swapfile = false
+    vim.bo[bufnr].filetype = "markdown"
+    vim.keymap.set("n", "q", function()
+      pcall(vim.api.nvim_win_close, 0, true)
+    end, { buffer = bufnr, silent = true, desc = "Close Coact status detail" })
+  end
+  vim.bo[bufnr].modifiable = true
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, M.detail_lines(thread))
+  vim.bo[bufnr].modifiable = false
+  vim.cmd("botright split")
+  local winid = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(winid, bufnr)
+  vim.api.nvim_win_set_height(winid, math.max(12, math.floor(vim.o.lines * 0.35)))
+  thread.status_detail_winid = winid
+  return bufnr, winid
 end
 
 M._clean_status_text = clean_status_text

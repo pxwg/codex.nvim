@@ -469,8 +469,9 @@ function M.set_statusline_visible(visible, thread_id)
     return false
   end
   thread.composer_statusline_visible = visible == true
+  buffers.render(thread.id)
   buffers.refresh_composer(thread)
-  util.notify("composer statusline " .. (thread.composer_statusline_visible and "shown" or "hidden"))
+  util.notify("Coact statusline " .. (thread.composer_statusline_visible and "shown" or "hidden"))
   return thread.composer_statusline_visible
 end
 

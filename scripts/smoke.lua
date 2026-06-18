@@ -869,10 +869,26 @@ do
     pi_buffers.render("pi:smoke-session")
     local pi_history_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
     assert(
-      pi_history_text:find("╭─ Pi status", 1, true) and pi_history_text:find("🤖 gpt-4o", 1, true),
-      "Pi composer statusline should also render as a status card at the bottom of the history buffer"
+      pi_history_text:find("╭─ Pi status", 1, true)
+        and pi_history_text:find("🤖 gpt-4o", 1, true)
+        and pi_history_text:find("g? help", 1, true)
+        and pi_history_text:find("gS hide status", 1, true),
+      "Pi composer statusline should also render as a hinted status card at the bottom of the history buffer"
     )
     local opened_pi_history_buf, opened_pi_history_win = pi_buffers.open("pi:smoke-session")
+    assert(type(vim.fn.maparg("g?", "n", false, true).callback) == "function", "history should bind g? help")
+    assert(type(vim.fn.maparg("gs", "n", false, true).callback) == "function", "history should bind gs status detail")
+    assert(type(vim.fn.maparg("gS", "n", false, true).callback) == "function", "history should bind gS status toggle")
+    assert(type(vim.fn.maparg("gt", "n", false, true).callback) == "function", "history should bind gt Pi tree")
+    assert(type(vim.fn.maparg("gc", "n", false, true).callback) == "function", "history should bind gc status")
+    assert(type(vim.fn.maparg("gy", "n", false, true).callback) == "function", "history should bind gy copy")
+    assert(type(vim.fn.maparg("gd", "n", false, true).callback) == "function", "history should bind gd diff")
+    assert(type(vim.fn.maparg("gr", "n", false, true).callback) == "function", "history should bind gr refresh")
+    assert(type(vim.fn.maparg("g]", "n", false, true).callback) == "function", "history should bind g] next message")
+    assert(
+      type(vim.fn.maparg("g[", "n", false, true).callback) == "function",
+      "history should bind g[ previous message"
+    )
     local opened_pi_history_width = vim.api.nvim_win_get_width(opened_pi_history_win)
     local opened_pi_history_lines = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
     local saw_opened_status = false
@@ -887,7 +903,58 @@ do
         )
       end
     end
+    local narrow_history_width = 24
+    local win_config = vim.api.nvim_win_get_config(opened_pi_history_win)
+    if win_config.relative and win_config.relative ~= "" then
+      win_config.width = narrow_history_width
+      pcall(vim.api.nvim_win_set_config, opened_pi_history_win, win_config)
+    else
+      pcall(vim.api.nvim_win_set_width, opened_pi_history_win, narrow_history_width)
+    end
+    pcall(vim.api.nvim_exec_autocmds, "WinResized", {})
+    vim.wait(1000, function()
+      local lines_after_resize = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
+      local saw_status_after_resize = false
+      for _, line in ipairs(lines_after_resize) do
+        if line:find("Pi status", 1, true) then
+          saw_status_after_resize = true
+        end
+        if saw_status_after_resize and vim.fn.strdisplaywidth(line) > narrow_history_width then
+          return false
+        end
+      end
+      return saw_status_after_resize
+    end, 20)
+    local resized_pi_history_lines = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
+    local saw_resized_status = false
+    for _, line in ipairs(resized_pi_history_lines) do
+      if line:find("Pi status", 1, true) then
+        saw_resized_status = true
+      end
+      if saw_resized_status then
+        assert(
+          vim.fn.strdisplaywidth(line) <= narrow_history_width,
+          "WinResized should immediately re-render the status card to the new window width"
+        )
+      end
+    end
     pcall(vim.api.nvim_win_close, opened_pi_history_win, true)
+    local status_detail_buf, status_detail_win = pi_statusline.toggle_detail(pi_state_thread)
+    assert(
+      status_detail_buf
+        and status_detail_win
+        and vim.api.nvim_buf_is_valid(status_detail_buf)
+        and vim.api.nvim_win_is_valid(status_detail_win),
+      "gs status detail should open a status detail page"
+    )
+    local status_detail_text = table.concat(vim.api.nvim_buf_get_lines(status_detail_buf, 0, -1, false), "\n")
+    assert(
+      status_detail_text:match("# Pi status")
+        and status_detail_text:match("Provider UI")
+        and status_detail_text:match("gpt%-4o"),
+      "status detail should include structured Pi provider UI details"
+    )
+    pi_statusline.toggle_detail(pi_state_thread)
     state.active_thread_id = "pi:smoke-session"
     local pi_prompt_buf = pi_buffers.ensure_prompt("pi:smoke-session")
     require("coact.ui.render").apply_prompt_marks(pi_state_thread, pi_prompt_buf)
@@ -903,6 +970,11 @@ do
     assert(saw_status_virt_lines, "composer prompt marks should include statusline virtual lines")
     require("coact").set_statusline_visible(false, "pi:smoke-session")
     assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide the composer statusline")
+    _G.__coact_smoke_hidden_status_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
+    assert(
+      not _G.__coact_smoke_hidden_status_text:find("Pi status", 1, true),
+      "Coact statusline command should hide the history status card"
+    )
     require("coact").set_statusline_visible(true, "pi:smoke-session")
     assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show the composer statusline")
   end)()
@@ -1410,6 +1482,21 @@ assert(
 assert(vim.bo[context_thread_buf].filetype == "coact-history", "history buffer should use coact-history filetype")
 assert(vim.bo[context_thread.prompt_bufnr].filetype == "coact-input", "composer should use coact-input filetype")
 assert(not vim.bo[context_thread_buf].modifiable, "Coact history buffer should be read-only")
+vim.api.nvim_set_current_win(context_thread.winid)
+vim.api.nvim_win_set_cursor(context_thread.winid, { 1, 0 })
+_G.__coact_smoke_next_message_callback = vim.fn.maparg("g]", "n", false, true).callback
+assert(type(_G.__coact_smoke_next_message_callback) == "function", "history should expose next message callback")
+_G.__coact_smoke_next_message_callback()
+_G.__coact_smoke_next_message_line = vim.api.nvim_win_get_cursor(context_thread.winid)[1]
+assert(_G.__coact_smoke_next_message_line > 1, "g] should jump to the next rendered message block")
+vim.api.nvim_win_set_cursor(context_thread.winid, { vim.api.nvim_buf_line_count(context_thread_buf), 0 })
+_G.__coact_smoke_prev_message_callback = vim.fn.maparg("g[", "n", false, true).callback
+assert(type(_G.__coact_smoke_prev_message_callback) == "function", "history should expose previous message callback")
+_G.__coact_smoke_prev_message_callback()
+assert(
+  vim.api.nvim_win_get_cursor(context_thread.winid)[1] < vim.api.nvim_buf_line_count(context_thread_buf),
+  "g[ should jump to the previous rendered message block"
+)
 context_thread.bufnr = nil
 _G.__coact_smoke_rebound_context_buf = buffers.ensure("smoke-context")
 assert(

@@ -364,6 +364,25 @@ local function prompt_visual_height(thread)
   return math.max(1, #prompt_lines(bufnr))
 end
 
+local function refresh_thread_layout(thread, opts)
+  if not thread then
+    return
+  end
+  opts = opts or {}
+  if opts.apply_layout then
+    if thread.ui_state == "compose" then
+      M.refresh_composer(thread)
+    elseif valid_win(thread.winid) then
+      window.apply_history_layout(thread.winid)
+    end
+  end
+  if valid_buf(thread.bufnr) then
+    M.render(thread.id)
+  elseif thread.ui_state == "compose" then
+    M.refresh_composer(thread)
+  end
+end
+
 local function setup_view_autocmds()
   if view_autocmds_setup then
     return
@@ -409,10 +428,18 @@ local function setup_view_autocmds()
     group = group,
     callback = function()
       for _, thread in pairs(state.threads) do
-        if thread.ui_state == "compose" then
-          M.refresh_composer(thread)
-        elseif valid_win(thread.winid) then
-          window.apply_history_layout(thread.winid)
+        if valid_win(thread.winid) or valid_win(thread.prompt_winid) then
+          refresh_thread_layout(thread, { apply_layout = true })
+        end
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = group,
+    callback = function()
+      for _, thread in pairs(state.threads) do
+        if valid_win(thread.winid) or valid_win(thread.prompt_winid) then
+          refresh_thread_layout(thread, { apply_layout = false })
         end
       end
     end,
@@ -446,6 +473,78 @@ local function context_tab_keymap(bufnr)
   end, { buffer = bufnr, expr = true, desc = "Trigger Coact context hook" })
 end
 
+local function open_history_help()
+  local lines = {
+    "# Coact history keys",
+    "",
+    "- `i`, `a`, `I`, `A`, `o`, `O`, `gi`, `c`, `cc`, `S`: open input composer",
+    "- `<C-s>`: submit prompt",
+    "- `q`: close Coact windows",
+    "- `za`: expand/collapse the block under cursor",
+    "- `K`: open the block detail buffer",
+    "- `g?`: show this help",
+    "- `gs`: toggle status detail page",
+    "- `gS`: show/hide the status card and composer statusline",
+    "- `gt`: open Pi session tree when the Pi provider is active",
+    "- `gc`: show current Coact runtime status",
+    "- `gy`: copy latest assistant output",
+    "- `gd`: show workspace diff",
+    "- `gr`: refresh history and composer rendering",
+    "- `g]` / `g[`: jump to next/previous message block",
+  }
+  local bufnr = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(bufnr, "coact://help/history-keys")
+  vim.bo[bufnr].buftype = "nofile"
+  vim.bo[bufnr].bufhidden = "wipe"
+  vim.bo[bufnr].swapfile = false
+  vim.bo[bufnr].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, lines)
+  vim.bo[bufnr].modifiable = false
+  vim.keymap.set("n", "q", function()
+    pcall(vim.api.nvim_win_close, 0, true)
+  end, { buffer = bufnr, silent = true, desc = "Close Coact history key help" })
+  vim.cmd("botright split")
+  vim.api.nvim_win_set_buf(0, bufnr)
+  vim.api.nvim_win_set_height(0, math.max(12, math.min(#lines + 2, math.floor(vim.o.lines * 0.45))))
+  return bufnr
+end
+
+local function slash_action(thread_id, command)
+  require("coact").submit_text(command, thread_id)
+end
+
+local function message_header_lines(thread)
+  local lines = {}
+  for _, mark in ipairs(thread and thread.header_marks or {}) do
+    if (mark.kind == "user" or mark.kind == "assistant") and mark.line then
+      table.insert(lines, mark.line)
+    end
+  end
+  table.sort(lines)
+  return lines
+end
+
+local function jump_history_message(bufnr, direction)
+  local thread = state.thread_for_buf(bufnr)
+  if not thread then
+    return util.notify("current buffer is not a Coact history buffer", vim.log.levels.WARN)
+  end
+  local current = vim.api.nvim_win_get_cursor(0)[1]
+  local target
+  for _, line in ipairs(message_header_lines(thread)) do
+    if direction > 0 and line > current then
+      target = line
+      break
+    elseif direction < 0 and line < current then
+      target = line
+    end
+  end
+  if not target then
+    return util.notify(direction > 0 and "no next Coact message" or "no previous Coact message", vim.log.levels.INFO)
+  end
+  vim.api.nvim_win_set_cursor(0, { target, 0 })
+end
+
 local function configure_history_buffer(bufnr, thread_id)
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "hide"
@@ -465,6 +564,41 @@ local function configure_history_buffer(bufnr, thread_id)
   vim.keymap.set("n", "K", function()
     require("coact.ui.detail").open()
   end, { buffer = bufnr, silent = true, desc = "Open Coact block detail" })
+  vim.keymap.set("n", "g?", open_history_help, { buffer = bufnr, silent = true, desc = "Show Coact history keys" })
+  vim.keymap.set("n", "gs", function()
+    composer_statusline.toggle_detail(state.thread_for_buf(bufnr))
+  end, { buffer = bufnr, silent = true, desc = "Toggle Coact status detail" })
+  vim.keymap.set("n", "gS", function()
+    local thread = state.thread_for_buf(bufnr)
+    if thread then
+      require("coact").toggle_statusline(thread.id)
+    end
+  end, { buffer = bufnr, silent = true, desc = "Toggle Coact statusline" })
+  vim.keymap.set("n", "gt", function()
+    slash_action(vim.b[bufnr].coact_thread_id, "/tree")
+  end, { buffer = bufnr, silent = true, desc = "Open Pi session tree" })
+  vim.keymap.set("n", "gc", function()
+    require("coact").show_status()
+  end, { buffer = bufnr, silent = true, desc = "Show Coact status" })
+  vim.keymap.set("n", "gy", function()
+    slash_action(vim.b[bufnr].coact_thread_id, "/copy")
+  end, { buffer = bufnr, silent = true, desc = "Copy latest Coact output" })
+  vim.keymap.set("n", "gd", function()
+    slash_action(vim.b[bufnr].coact_thread_id, "/diff")
+  end, { buffer = bufnr, silent = true, desc = "Show workspace diff" })
+  vim.keymap.set("n", "gr", function()
+    local thread = state.thread_for_buf(bufnr)
+    if thread then
+      M.render(thread.id)
+      M.refresh_composer(thread)
+    end
+  end, { buffer = bufnr, silent = true, desc = "Refresh Coact render" })
+  vim.keymap.set("n", "g]", function()
+    jump_history_message(bufnr, 1)
+  end, { buffer = bufnr, silent = true, desc = "Jump to next Coact message" })
+  vim.keymap.set("n", "g[", function()
+    jump_history_message(bufnr, -1)
+  end, { buffer = bufnr, silent = true, desc = "Jump to previous Coact message" })
 end
 
 local function configure_prompt_buffer(bufnr, thread_id)

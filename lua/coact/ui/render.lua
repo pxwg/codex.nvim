@@ -96,6 +96,7 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "CoactStatusLineState", { default = true, link = "DiagnosticOk" })
   vim.api.nvim_set_hl(0, "CoactStatusLineMessage", { default = true, link = "DiagnosticInfo" })
   vim.api.nvim_set_hl(0, "CoactStatusLineWidget", { default = true, link = "String" })
+  vim.api.nvim_set_hl(0, "CoactStatusLineHint", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactStatusLineSeparator", { default = true, link = "Delimiter" })
 end
 
