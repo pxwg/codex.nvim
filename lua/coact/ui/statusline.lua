@@ -109,6 +109,50 @@ local function usage_value(usage, ...)
   return nil
 end
 
+local function usage_context(usage)
+  if type(usage) ~= "table" then
+    return nil
+  end
+  return type(usage.contextUsage) == "table" and usage.contextUsage
+    or type(usage.context_usage) == "table" and usage.context_usage
+    or nil
+end
+
+local function auto_compaction_enabled(thread, usage)
+  local value = util.value(thread and thread.auto_compaction_enabled)
+  if value ~= nil then
+    return value == true
+  end
+  value = util.value(usage and (usage.autoCompactionEnabled or usage.auto_compaction_enabled))
+  if value ~= nil then
+    return value == true
+  end
+  value = util.value(
+    thread and thread.thread and (thread.thread.autoCompactionEnabled or thread.thread.auto_compaction_enabled)
+  )
+  return value == true
+end
+
+local function context_usage_text(thread)
+  local usage = type(thread and thread.token_usage) == "table" and thread.token_usage or nil
+  local context = usage_context(usage)
+  if not context then
+    return nil
+  end
+  local context_window = util.value(context.contextWindow or context.context_window)
+  local percent = util.value(context.percent)
+  local text
+  if percent == nil or percent == vim.NIL then
+    text = "?/" .. tostring(format_tokens(context_window) or "?")
+  else
+    text = ("%.1f%%/%s"):format(tonumber(percent) or 0, format_tokens(context_window) or "?")
+  end
+  if auto_compaction_enabled(thread, usage) then
+    text = text .. " (auto)"
+  end
+  return text
+end
+
 local function token_usage_segments(thread)
   local usage = type(thread and thread.token_usage) == "table" and thread.token_usage or nil
   if not usage then
@@ -125,6 +169,7 @@ local function token_usage_segments(thread)
   add_segment(segments, nil, output and ("↓" .. output) or nil)
   add_segment(segments, nil, cache_read and ("R" .. cache_read) or nil)
   add_segment(segments, nil, cache_write and ("W" .. cache_write) or nil)
+  add_segment(segments, "context", context_usage_text(thread), { value_hl = "CoactStatusLineContext" })
   local cost = usage_value(usage, "cost", "totalCost", "total_cost")
   if type(cost) == "table" then
     cost = usage_value(cost, "total")
@@ -486,7 +531,7 @@ end
 local function token_usage_text(thread)
   local values = {}
   for _, segment in ipairs(token_usage_segments(thread)) do
-    if segment.value then
+    if segment.value and not segment.key then
       table.insert(values, segment.value)
     end
   end
@@ -503,6 +548,7 @@ local function history_items(thread)
   add_history_item(items, is_pi_thread(thread) and "thinking" or "effort", settings.effort)
   add_history_item(items, "state", thread_state_label(thread), "CoactStatusLineState")
   add_history_item(items, "message", thread and thread.status_message, "CoactStatusLineMessage")
+  add_history_item(items, "context", context_usage_text(thread), "CoactStatusLineContext")
   add_history_item(items, "tokens", token_usage_text(thread))
 
   local ui = provider_ui(thread)

@@ -233,6 +233,8 @@ function M.update_thread_from_payload(payload)
     status = util.status_label(payload.status),
     status_payload = util.value(payload.status),
     title = util.value(payload.name) or util.value(payload.preview),
+    token_usage = payload.token_usage or payload.tokenUsage,
+    auto_compaction_enabled = util.value(payload.autoCompactionEnabled or payload.auto_compaction_enabled),
   })
   if payload.replaceTurns == true or payload.replace_turns == true then
     thread.turns = {}

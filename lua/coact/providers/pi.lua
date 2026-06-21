@@ -46,6 +46,8 @@ local M = {
   },
 }
 
+local request_session_stats
+
 local runtime = {
   session_id = nil,
   session_file = nil,
@@ -180,8 +182,10 @@ function M.initialize(rpc, callback)
       callback(err, nil)
       return
     end
-    M._remember_state(result)
-    callback(nil, result or true)
+    local thread_id = M._remember_state(result)
+    request_session_stats(rpc, thread_id, function()
+      callback(nil, result or true)
+    end)
   end)
 end
 
@@ -275,6 +279,65 @@ local function attach_provider_ui(thread_id)
   local thread = coact_state.ensure_thread(thread_id)
   import_thread_provider_ui(thread)
   thread.provider_ui = provider_ui_store()
+end
+
+local function normalize_session_stats(stats)
+  if type(stats) ~= "table" then
+    return nil
+  end
+  local tokens = type(stats.tokens) == "table" and stats.tokens or {}
+  local context_usage = type(stats.contextUsage) == "table" and stats.contextUsage
+    or type(stats.context_usage) == "table" and stats.context_usage
+    or nil
+  return {
+    input = util.value(tokens.input),
+    output = util.value(tokens.output),
+    cacheRead = util.value(tokens.cacheRead or tokens.cache_read),
+    cacheWrite = util.value(tokens.cacheWrite or tokens.cache_write),
+    total = util.value(tokens.total),
+    cost = util.value(stats.cost),
+    contextUsage = context_usage,
+    autoCompactionEnabled = util.value(stats.autoCompactionEnabled or stats.auto_compaction_enabled),
+    sessionId = util.value(stats.sessionId),
+    sessionFile = util.value(stats.sessionFile),
+  }
+end
+
+local function remember_session_stats(stats, thread_id)
+  local normalized = normalize_session_stats(stats)
+  if not normalized then
+    return nil
+  end
+  thread_id = thread_id or runtime.current_thread_id or "pi:session"
+  local ok, coact_state = pcall(require, "coact.state")
+  if ok and thread_id then
+    local thread = coact_state.ensure_thread(thread_id)
+    thread.token_usage = normalized
+    if normalized.autoCompactionEnabled ~= nil then
+      thread.auto_compaction_enabled = normalized.autoCompactionEnabled
+    end
+    local buffers_ok, buffers = pcall(require, "coact.buffers")
+    if buffers_ok then
+      if buffers.schedule_render then
+        buffers.schedule_render(thread.id)
+      end
+      if buffers.refresh_composer then
+        buffers.refresh_composer(thread)
+      end
+    end
+  end
+  return normalized
+end
+
+request_session_stats = function(rpc, thread_id, callback)
+  rpc._request_message("get_session_stats", {}, function(err, result)
+    if not err then
+      remember_session_stats(result, thread_id)
+    end
+    if callback then
+      callback(err, result)
+    end
+  end)
 end
 
 function M._remember_state(state)
@@ -434,6 +497,8 @@ local function thread_from_state(state, attrs)
     model = model_id(model),
     modelProvider = util.value(model.provider),
     reasoningEffort = util.value(state.thinkingLevel),
+    autoCompactionEnabled = util.value(state.autoCompactionEnabled),
+    token_usage = normalize_session_stats(attrs.stats or attrs.sessionStats),
     provider_ui = not empty_provider_ui(runtime.provider_ui) and provider_ui_store() or nil,
   }
 end
@@ -810,13 +875,16 @@ local function read_current_thread(rpc, params, callback, opts)
     if opts.replace_turns == true then
       thread.replaceTurns = true
     end
-    rpc._request_message("get_messages", {}, function(messages_err, messages_result)
-      if messages_err then
+    request_session_stats(rpc, thread.id, function(_, stats_result)
+      thread.token_usage = normalize_session_stats(stats_result) or thread.token_usage
+      rpc._request_message("get_messages", {}, function(messages_err, messages_result)
+        if messages_err then
+          callback(nil, { thread = thread })
+          return
+        end
+        thread.turns = M._turns_from_messages(messages_result and messages_result.messages, thread.id)
         callback(nil, { thread = thread })
-        return
-      end
-      thread.turns = M._turns_from_messages(messages_result and messages_result.messages, thread.id)
-      callback(nil, { thread = thread })
+      end)
     end)
   end)
 end
@@ -838,7 +906,11 @@ function M.custom_request(rpc, method, params, callback)
           callback(state_err, nil)
           return
         end
-        callback(nil, { thread = thread_from_state(state_result, params) })
+        local thread = thread_from_state(state_result, params)
+        request_session_stats(rpc, thread.id, function(_, stats_result)
+          thread.token_usage = normalize_session_stats(stats_result) or thread.token_usage
+          callback(nil, { thread = thread })
+        end)
       end)
     end)
     return true
@@ -1018,7 +1090,7 @@ function M.custom_request(rpc, method, params, callback)
   end
 
   if method == "account/rateLimits/read" then
-    rpc._request_message("get_session_stats", {}, callback)
+    request_session_stats(rpc, params.threadId or params.thread_id or current_thread_id(), callback)
     return true
   end
 

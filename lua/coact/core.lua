@@ -749,6 +749,9 @@ end
 handlers["pi/agent_end"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   set_generation(thread, "idle", nil)
+  require("coact.rpc").request("account/rateLimits/read", { threadId = params.threadId }, function()
+    schedule(params.threadId)
+  end)
   schedule(params.threadId)
 end
 

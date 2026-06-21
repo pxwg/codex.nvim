@@ -821,6 +821,12 @@ do
         and pi_state_thread.provider_ui.widgets.belowEditor.plan.lines[1] == "step 1",
       "Pi extension UI state should be cached on the active thread"
     )
+    pi_state_thread.token_usage = {
+      input = 1000,
+      output = 500,
+      contextUsage = { percent = 82.5, contextWindow = 272000, tokens = 224400 },
+      autoCompactionEnabled = true,
+    }
     do
       local saved_active_thread_id = state.active_thread_id
       local saved_runtime_thread_id = pi_provider._runtime.current_thread_id
@@ -871,9 +877,10 @@ do
     assert(
       pi_history_text:find("╭─ Pi status", 1, true)
         and pi_history_text:find("🤖 gpt-4o", 1, true)
+        and pi_history_text:find("82.5%/272k (auto)", 1, true)
         and pi_history_text:find("g? help", 1, true)
         and pi_history_text:find("gS hide status", 1, true),
-      "Pi composer statusline should also render as a hinted status card at the bottom of the history buffer"
+      "Pi composer statusline should also render context usage in a hinted status card"
     )
     local opened_pi_history_buf, opened_pi_history_win = pi_buffers.open("pi:smoke-session")
     assert(type(vim.fn.maparg("g?", "n", false, true).callback) == "function", "history should bind g? help")
@@ -1081,6 +1088,12 @@ do
             thinkingLevel = "high",
             model = { provider = "openai", id = "gpt-4o" },
           })
+        elseif method == "get_session_stats" then
+          callback(nil, {
+            contextUsage = { percent = 12.5, contextWindow = 200000, tokens = 25000 },
+            tokens = { input = 100, output = 50, total = 150 },
+            autoCompactionEnabled = true,
+          })
         elseif method == "get_messages" then
           callback(nil, {
             messages = {
@@ -1109,19 +1122,21 @@ do
   )
   assert(pi_resume_handled, "Pi provider should handle thread/resume")
   assert(
-    #pi_resume_calls == 3
+    #pi_resume_calls == 4
       and pi_resume_calls[1].method == "switch_session"
       and pi_resume_calls[1].params.sessionPath == pi_old_session_file
       and pi_resume_calls[2].method == "get_state"
-      and pi_resume_calls[3].method == "get_messages",
+      and pi_resume_calls[3].method == "get_session_stats"
+      and pi_resume_calls[4].method == "get_messages",
     "Pi resume should switch to the selected native session before reading messages"
   )
   assert(
     pi_resume_result
       and pi_resume_result.thread.id == "pi:pi-old"
       and pi_resume_result.thread.turns
-      and #pi_resume_result.thread.turns == 1,
-    "Pi resume should return the selected historical thread"
+      and #pi_resume_result.thread.turns == 1
+      and pi_resume_result.thread.token_usage.contextUsage.percent == 12.5,
+    "Pi resume should return the selected historical thread with session stats"
   );
   (function()
     local pi_tree_result = nil
@@ -1138,6 +1153,11 @@ do
               sessionId = "pi-old",
               sessionFile = pi_old_session_file,
               sessionName = "Old Pi",
+            })
+          elseif method == "get_session_stats" then
+            callback(nil, {
+              contextUsage = { percent = 30, contextWindow = 200000, tokens = 60000 },
+              tokens = { input = 100, output = 50, total = 150 },
             })
           elseif method == "get_messages" then
             callback(nil, {
@@ -1167,10 +1187,11 @@ do
     )
     assert(pi_tree_handled, "Pi provider should handle thread/tree")
     assert(
-      #pi_tree_calls == 3
+      #pi_tree_calls == 4
         and pi_tree_calls[1].method == "prompt"
         and pi_tree_calls[2].method == "get_state"
-        and pi_tree_calls[3].method == "get_messages",
+        and pi_tree_calls[3].method == "get_session_stats"
+        and pi_tree_calls[4].method == "get_messages",
       "Pi thread/tree should navigate before refreshing current messages"
     )
     assert(
