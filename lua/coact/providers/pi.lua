@@ -124,6 +124,17 @@ local function append_command_args(command, args)
   return out
 end
 
+local function without_host_nvim_env(command)
+  local unset_args = { "-u", "NVIM", "-u", "NVIM_LISTEN_ADDRESS" }
+  if type(command) == "string" then
+    return "env " .. table.concat(unset_args, " ") .. " " .. command
+  end
+  local out = { "env" }
+  vim.list_extend(out, unset_args)
+  vim.list_extend(out, list_copy(command))
+  return out
+end
+
 local function effective_model(opts)
   local thread = opts.thread or {}
   local pi = provider_opts(opts)
@@ -173,7 +184,12 @@ function M.env(opts, env)
 end
 
 function M.prepare_command(command, env)
-  return require("coact.providers.pi_edit_bridge").prepare_command(command, env)
+  local err
+  command, env, err = require("coact.providers.pi_edit_bridge").prepare_command(command, env)
+  if command then
+    command = without_host_nvim_env(command)
+  end
+  return command, env, err
 end
 
 function M.initialize(rpc, callback)

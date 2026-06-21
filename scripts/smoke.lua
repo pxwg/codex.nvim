@@ -397,6 +397,13 @@ do
   assert(pi_bridge.enabled(), "Pi provider should enable the edit bridge in pair mode by default")
   local prepared_pi_command, prepared_pi_env, prepared_pi_err = pi_provider.prepare_command(pi_command, {})
   assert(prepared_pi_command ~= nil, "Pi edit bridge command preparation should succeed: " .. tostring(prepared_pi_err))
+  assert(
+    prepared_pi_command[1] == "env"
+      and vim.tbl_contains(prepared_pi_command, "-u")
+      and vim.tbl_contains(prepared_pi_command, "NVIM")
+      and vim.tbl_contains(prepared_pi_command, "NVIM_LISTEN_ADDRESS"),
+    "Pi provider should scrub host Neovim RPC environment before starting Pi"
+  )
   assert(vim.tbl_contains(prepared_pi_command, "--extension"), "Pi edit bridge should inject a process-local extension")
   local extension_index
   for index, part in ipairs(prepared_pi_command) do
