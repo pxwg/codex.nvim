@@ -867,39 +867,12 @@ local function apply_composer_token_marks(thread, bufnr)
   end
 end
 
-local function buffer_window_width(bufnr)
-  for _, winid in ipairs(vim.fn.win_findbuf(bufnr)) do
-    if vim.api.nvim_win_is_valid(winid) then
-      return vim.api.nvim_win_get_width(winid)
-    end
-  end
-  return nil
-end
-
-function M.apply_prompt_marks(thread, bufnr)
+function M.apply_prompt_marks(_, bufnr)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
   setup_highlights()
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
-  local status_opts = { width = buffer_window_width(bufnr) }
-  local above_status_lines = statusline.above_lines(thread, status_opts)
-  if #above_status_lines > 0 then
-    vim.api.nvim_buf_set_extmark(bufnr, ns, 0, 0, {
-      virt_lines = above_status_lines,
-      virt_lines_above = true,
-      priority = 1200,
-      strict = false,
-    })
-  end
-  local below_status_lines = statusline.below_lines(thread, status_opts)
-  if #below_status_lines > 0 then
-    vim.api.nvim_buf_set_extmark(bufnr, ns, math.max(0, vim.api.nvim_buf_line_count(bufnr) - 1), 0, {
-      virt_lines = below_status_lines,
-      priority = 1200,
-      strict = false,
-    })
-  end
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
   for offset, line in ipairs(lines) do
     local lnum0 = offset - 1

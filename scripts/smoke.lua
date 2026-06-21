@@ -854,22 +854,25 @@ do
       pi_statusline.above_lines(state.ensure_thread("pi:empty-statusline", { title = "Pi session" }))
     assert(
       vim.inspect(empty_pi_status_lines):match("Pi session") and vim.inspect(empty_pi_status_lines):match("state"),
-      "Pi composer statusline should show a non-empty fallback for sparse Pi thread state"
+      "Pi statusline helpers should show a non-empty fallback for sparse Pi thread state"
     )
     local pi_status_lines = pi_statusline.above_lines(pi_state_thread)
-    assert(#pi_status_lines >= 3, "Pi composer statusline should render title, summary, and extension status lines")
+    assert(#pi_status_lines >= 3, "Pi statusline helpers should render title, summary, and extension status lines")
     local pi_status_text = vim.inspect(pi_status_lines)
     assert(
       pi_status_text:match("pi %- smoke") and pi_status_text:match("model") and pi_status_text:match("🤖 gpt%-4o"),
-      "Pi composer statusline should expose sanitized extension status text"
+      "Pi statusline helpers should expose sanitized extension status text"
     )
     local pi_wrapped_status_lines = pi_statusline.above_lines(pi_state_thread, { width = 44 })
     assert(
       #pi_wrapped_status_lines >= 4 and vim.inspect(pi_wrapped_status_lines):match("state"),
-      "Pi composer statusline should wrap structured fields for narrow composers"
+      "Pi statusline helpers should wrap structured fields for narrow widths"
     )
     local pi_widget_lines = pi_statusline.below_lines(pi_state_thread)
-    assert(vim.inspect(pi_widget_lines):match("step 1"), "Pi below-editor widgets should render below the composer")
+    assert(
+      vim.inspect(pi_widget_lines):match("step 1"),
+      "Pi below-editor widgets should remain available to statusline helpers"
+    )
     local pi_buffers = require("coact.buffers")
     local pi_history_buf = pi_buffers.ensure("pi:smoke-session")
     pi_buffers.render("pi:smoke-session")
@@ -974,16 +977,16 @@ do
         break
       end
     end
-    assert(saw_status_virt_lines, "composer prompt marks should include statusline virtual lines")
+    assert(not saw_status_virt_lines, "composer prompt marks should not render statusline virtual lines")
     require("coact").set_statusline_visible(false, "pi:smoke-session")
-    assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide the composer statusline")
+    assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide the history status card")
     _G.__coact_smoke_hidden_status_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
     assert(
       not _G.__coact_smoke_hidden_status_text:find("Pi status", 1, true),
       "Coact statusline command should hide the history status card"
     )
     require("coact").set_statusline_visible(true, "pi:smoke-session")
-    assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show the composer statusline")
+    assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show the history status card")
   end)()
   local pi_cwd = require("coact.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")

@@ -484,7 +484,7 @@ local function open_history_help()
     "- `K`: open the block detail buffer",
     "- `g?`: show this help",
     "- `gs`: toggle status detail page",
-    "- `gS`: show/hide the status card and composer statusline",
+    "- `gS`: show/hide the history status card",
     "- `gt`: open Pi session tree when the Pi provider is active",
     "- `gc`: show current Coact runtime status",
     "- `gy`: copy latest assistant output",

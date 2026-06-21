@@ -465,7 +465,7 @@ function M.set_statusline_visible(visible, thread_id)
   setup_once()
   local thread = state.get_thread(thread_id or buffers.get_thread_id() or state.active_thread_id)
   if not thread then
-    util.notify("open a Coact thread before changing composer statusline visibility", vim.log.levels.WARN)
+    util.notify("open a Coact thread before changing statusline visibility", vim.log.levels.WARN)
     return false
   end
   thread.composer_statusline_visible = visible == true
@@ -479,7 +479,7 @@ function M.toggle_statusline(thread_id)
   setup_once()
   local thread = state.get_thread(thread_id or buffers.get_thread_id() or state.active_thread_id)
   if not thread then
-    util.notify("open a Coact thread before changing composer statusline visibility", vim.log.levels.WARN)
+    util.notify("open a Coact thread before changing statusline visibility", vim.log.levels.WARN)
     return false
   end
   local visible = require("coact.ui.statusline").visible(thread)
