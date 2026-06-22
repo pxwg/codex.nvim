@@ -442,9 +442,16 @@ handlers["turn/started"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
   thread.active_turn_id = params.turn.id
-  if thread.pending_request then
-    thread.pending_request.turn_id = params.turn.id
-    state.set_turn_settings(params.threadId, params.turn.id, thread.pending_request.settings)
+  local pending = thread.pending_request
+  if
+    pending
+    and (
+      pending.turn_id == params.turn.id
+      or (not pending.turn_id and not pending.streaming_behavior and not pending.streamingBehavior)
+    )
+  then
+    pending.turn_id = params.turn.id
+    state.set_turn_settings(params.threadId, params.turn.id, pending.settings)
   end
   set_generation(thread, "submitted", agent_label() .. " is thinking...")
   schedule(params.threadId)
@@ -463,8 +470,21 @@ handlers["turn/completed"] = function(params)
   if thread.active_turn_id == params.turn.id then
     thread.active_turn_id = nil
   end
-  thread.pending_request = nil
-  set_generation(thread, "idle", nil)
+  local pending = thread.pending_request
+  if pending then
+    if
+      pending.turn_id == params.turn.id
+      or (not pending.turn_id and not pending.streaming_behavior and not pending.streamingBehavior)
+    then
+      thread.pending_request = nil
+      pending = nil
+    end
+  end
+  if pending then
+    set_generation(thread, "submitted", agent_label() .. " has a queued follow-up...")
+  else
+    set_generation(thread, "idle", nil)
+  end
   hooks.emit("generation_completed", { thread = thread, turn = params.turn })
   schedule(params.threadId)
 end
@@ -748,7 +768,12 @@ end
 
 handlers["pi/agent_end"] = function(params)
   local thread = state.ensure_thread(params.threadId)
-  set_generation(thread, "idle", nil)
+  local pending = thread.pending_request
+  if pending and (pending.streaming_behavior or pending.streamingBehavior) then
+    set_generation(thread, "submitted", agent_label() .. " has a queued follow-up...")
+  else
+    set_generation(thread, "idle", nil)
+  end
   require("coact.rpc").request("account/rateLimits/read", { threadId = params.threadId }, function()
     schedule(params.threadId)
   end)

@@ -135,7 +135,8 @@ local function sandbox_policy(mode)
   return require("coact.slash")._sandbox_policy(mode)
 end
 
-local function turn_start_params(thread_id, input)
+local function turn_start_params(thread_id, input, opts)
+  opts = opts or {}
   local cfg = config.get().thread
   local effective = state.effective_thread_settings(state.get_thread(thread_id), cfg)
   local params = {
@@ -151,6 +152,10 @@ local function turn_start_params(thread_id, input)
     summary = effective.reasoning_summary,
     personality = effective.personality,
   }
+  local streaming_behavior = opts.streaming_behavior or opts.streamingBehavior
+  if streaming_behavior == "steer" or streaming_behavior == "followUp" then
+    params.streamingBehavior = streaming_behavior
+  end
   if cfg.permissions then
     params.permissions = cfg.permissions
   else
@@ -169,6 +174,34 @@ local function turn_settings_from_params(params, thread)
     service_tier = params.serviceTier,
     reasoning_effort = params.effort,
   }
+end
+
+local busy_generations = {
+  submitted = true,
+  waiting_backend = true,
+  streaming = true,
+  tool_running = true,
+  patch_review = true,
+  reconciling = true,
+  cancelling = true,
+}
+
+local function submit_streaming_behavior(thread, opts)
+  local requested = opts and (opts.streaming_behavior or opts.streamingBehavior)
+  if requested == "steer" or requested == "followUp" then
+    return requested
+  end
+  if not providers.is("pi") or not thread then
+    return nil
+  end
+  if thread.active_turn_id or busy_generations[thread.generation] then
+    return "followUp"
+  end
+  local pending = thread.pending_request
+  if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
+    return "followUp"
+  end
+  return nil
 end
 
 function M.setup(opts)
@@ -278,17 +311,28 @@ function M.submit_text(text, thread_id, opts)
       return
     end
     thread = state.get_thread(thread_id)
-    local params = turn_start_params(thread_id, input)
+    local streaming_behavior = submit_streaming_behavior(thread, opts)
+    local params = turn_start_params(thread_id, input, { streaming_behavior = streaming_behavior })
+    local pending_request
     if thread then
       local settings = turn_settings_from_params(params, thread)
-      thread.pending_request = {
+      pending_request = {
         prompt = text,
         input = input,
         created_at = util.now_ms(),
         settings = settings,
+        streaming_behavior = streaming_behavior,
       }
-      thread.generation = "submitted"
-      thread.status_message = providers.agent_label() .. " is thinking..."
+      thread.pending_request = pending_request
+      if streaming_behavior then
+        if not busy_generations[thread.generation] then
+          thread.generation = "submitted"
+        end
+        thread.status_message = providers.agent_label() .. " queued a follow-up..."
+      else
+        thread.generation = "submitted"
+        thread.status_message = providers.agent_label() .. " is thinking..."
+      end
       buffers.schedule_render(thread_id)
     end
     rpc.request("turn/start", params, function(err, result)
@@ -296,8 +340,10 @@ function M.submit_text(text, thread_id, opts)
         local failed_thread = state.get_thread(thread_id)
         if failed_thread then
           failed_thread.last_error = tostring(err.message or err)
-          failed_thread.pending_request = nil
-          failed_thread.generation = "idle"
+          if not pending_request or failed_thread.pending_request == pending_request then
+            failed_thread.pending_request = nil
+            failed_thread.generation = "idle"
+          end
           buffers.schedule_render(thread_id)
         end
         if type(opts.on_error) == "function" then
@@ -312,9 +358,11 @@ function M.submit_text(text, thread_id, opts)
       end
       state.add_turn(thread_id, turn)
       local submitted_thread = state.get_thread(thread_id)
-      if submitted_thread and submitted_thread.pending_request and turn.id then
+      if turn.id and pending_request then
+        state.set_turn_settings(thread_id, turn.id, pending_request.settings)
+      end
+      if submitted_thread and submitted_thread.pending_request == pending_request and turn.id then
         submitted_thread.pending_request.turn_id = turn.id
-        state.set_turn_settings(thread_id, turn.id, submitted_thread.pending_request.settings)
       end
       if type(opts.on_success) == "function" then
         opts.on_success(turn)

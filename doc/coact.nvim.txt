@@ -189,9 +189,12 @@ To use Pi as the active provider:
 The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to
 Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
 commands, and normalizes Pi streaming, thinking, and tool events into the same
-renderer blocks used by the rest of coact.nvim. In pair edit mode,
-`edit_bridge.enabled` dynamically injects a temporary Pi extension into only
-the Pi process started by coact.nvim. That extension overrides Pi's built-in
+renderer blocks used by the rest of coact.nvim. Submitting another prompt while
+Pi is generating queues it as a Pi `followUp` instead of failing with "Agent is
+already processing"; the queued prompt remains visible until Pi starts that
+turn. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary
+Pi extension into only the Pi process started by coact.nvim. That extension
+overrides Pi's built-in
 `edit` and `write` tools,
 turns them into Neovim-reviewed file-change proposals, and then lets the
 existing in-buffer patch review write accepted hunks. It does not install or
@@ -460,7 +463,7 @@ notification blocks.
 
 Thread/composer buffer keys:
 >
-  CTRL-S    submit prompt
+  CTRL-S    submit prompt; with Pi, submits during generation queue follow-ups
   ENTER     submit prompt from composer normal mode
   i/a/...   open composer from history preview
   za        expand/collapse placeholder block

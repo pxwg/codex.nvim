@@ -1211,6 +1211,65 @@ do
         and pi_tree_result.thread.turns[1].items[1].content[1].text == "tree-selected prompt",
       "Pi thread/tree should return a replacement branch snapshot"
     )
+  end)();
+  (function()
+    pi_provider._runtime.current_thread_id = "pi:smoke-session"
+    pi_provider._runtime.active_turn_id = "pi-turn-active"
+    pi_provider._runtime.last_turn_id = "pi-turn-active"
+    pi_provider._runtime.queued_turns = {}
+    local queued_result = nil
+    local prompt_params = nil
+    local handled = pi_provider.custom_request(
+      {
+        _request_message = function(method, params, callback)
+          assert(method == "prompt", "Pi queued turn/start should still use prompt RPC")
+          prompt_params = params
+          callback(nil, {})
+        end,
+      },
+      "turn/start",
+      {
+        threadId = "pi:smoke-session",
+        input = { { type = "text", text = "queued follow-up" } },
+        streamingBehavior = "followUp",
+      },
+      function(err, result)
+        assert(not err, "Pi queued turn/start should be accepted")
+        queued_result = result
+      end
+    )
+    assert(handled, "Pi provider should handle queued turn/start")
+    assert(prompt_params and prompt_params.streamingBehavior == "followUp", "Pi queued submit should forward followUp")
+    assert(
+      pi_provider._runtime.active_turn_id == "pi-turn-active",
+      "Pi queued submit should not steal the active streaming turn id"
+    )
+    assert(
+      queued_result and queued_result.queued == true and queued_result.turn and #(queued_result.turn.items or {}) == 0,
+      "Pi queued submit should return an empty optimistic turn until Pi starts it"
+    )
+    assert(
+      pi_provider._runtime.queued_turns[1] and pi_provider._runtime.queued_turns[1].id == queued_result.turn.id,
+      "Pi queued submit should remember the queued turn id for later streaming events"
+    )
+    local active_end =
+      pi_provider.decode_notification({ type = "turn_end", message = { role = "assistant", content = {} } })
+    assert(active_end, "Pi active turn_end should decode before queued follow-up starts")
+    assert(pi_provider._runtime.active_turn_id == nil, "Pi active turn_end should clear the active turn")
+    local queued_start = pi_provider.decode_notification({ type = "turn_start" })
+    assert(
+      queued_start
+        and queued_start.message.params.turn.id == queued_result.turn.id
+        and queued_start.message.params.turn.items[1].id == queued_result.turn.id .. ":user",
+      "Pi queued turn_start should consume the queued id and emit the queued user item"
+    )
+    assert(
+      pi_provider._runtime.active_turn_id == queued_result.turn.id,
+      "Pi queued turn_start should become the active turn for subsequent deltas"
+    )
+    pi_provider._runtime.active_turn_id = nil
+    pi_provider._runtime.last_turn_id = nil
+    pi_provider._runtime.queued_turns = {}
   end)()
   coact.setup({
     provider = "pi",
@@ -1292,7 +1351,44 @@ assert(
 )
 local effective_turn_params = coact._turn_start_params("smoke-thread-settings-header", {})
 assert(effective_turn_params.effort == "medium", "turn/start should use updated thread reasoning effort")
-assert(effective_turn_params.serviceTier == "fast", "turn/start should use updated thread service tier")
+assert(effective_turn_params.serviceTier == "fast", "turn/start should use updated thread service tier");
+(function()
+  coact.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        edit_bridge = {
+          enabled = false,
+        },
+      },
+    },
+  })
+  local busy_pi_submit_thread = state.ensure_thread("pi:smoke-busy-submit", {
+    generation = "streaming",
+    active_turn_id = "pi-turn-active",
+  })
+  local rpc_for_busy_submit = require("coact.rpc")
+  local original_rpc_start_for_busy_submit = rpc_for_busy_submit.start
+  local original_rpc_request_for_busy_submit = rpc_for_busy_submit.request
+  local busy_submit_params = nil
+  rpc_for_busy_submit.start = function(callback)
+    callback(nil, true)
+  end
+  rpc_for_busy_submit.request = function(method, params, callback)
+    assert(method == "turn/start", "busy Pi submit should start a turn")
+    busy_submit_params = params
+    callback(nil, { turn = { id = "pi-queued-submit", items = {} } })
+  end
+  coact.submit_text("queued while busy", "pi:smoke-busy-submit")
+  rpc_for_busy_submit.request = original_rpc_request_for_busy_submit
+  rpc_for_busy_submit.start = original_rpc_start_for_busy_submit
+  assert(busy_submit_params.streamingBehavior == "followUp", "busy Pi submit should queue as followUp")
+  assert(
+    busy_pi_submit_thread.pending_request and busy_pi_submit_thread.pending_request.streaming_behavior == "followUp",
+    "busy Pi submit should remember queued pending request behavior"
+  )
+  coact.setup()
+end)()
 stale_header_thread.settings = { serviceTier = vim.NIL }
 state.apply_thread_settings(stale_header_thread, stale_header_thread.settings)
 assert(
@@ -3676,7 +3772,41 @@ core.handle_notification({
 assert(
   core_pending_thread.pending_request.turn_id == "turn-core",
   "turn/started should bind pending requests to the active turn"
-)
+);
+(function()
+  local core_queued_pending_thread = state.ensure_thread("smoke-core-queued-pending", {
+    title = "Smoke queued pending",
+    cwd = vim.fn.getcwd(),
+  })
+  core_queued_pending_thread.pending_request = {
+    prompt = "queued pending",
+    turn_id = "queued-turn",
+    streaming_behavior = "followUp",
+    created_at = vim.uv.now(),
+  }
+  core.handle_notification({
+    method = "turn/completed",
+    params = {
+      threadId = "smoke-core-queued-pending",
+      turn = { id = "active-turn", items = {} },
+    },
+  })
+  assert(
+    core_queued_pending_thread.pending_request ~= nil,
+    "turn/completed for the active turn should preserve a queued Pi follow-up pending request"
+  )
+  core.handle_notification({
+    method = "turn/completed",
+    params = {
+      threadId = "smoke-core-queued-pending",
+      turn = { id = "queued-turn", items = {} },
+    },
+  })
+  assert(
+    core_queued_pending_thread.pending_request == nil,
+    "turn/completed for the queued turn should clear the queued pending request"
+  )
+end)()
 dynamic_tools._mark_nvim_apply_patch_auto_apply(
   { threadId = "smoke-core-pending", turnId = "turn-core" },
   core_pending_thread,

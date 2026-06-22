@@ -563,7 +563,7 @@ function M.pending_blocks(thread)
       type = "UserBlock",
       message_id = "__pending_user__",
       text = text,
-      state = "submitted",
+      state = (request.streaming_behavior or request.streamingBehavior) and "queued" or "submitted",
       local_only = true,
       raw = request,
     })

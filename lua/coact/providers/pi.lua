@@ -57,6 +57,7 @@ local runtime = {
   last_turn_id = nil,
   turn_seq = 0,
   provider_ui = nil,
+  queued_turns = {},
   tool_output = {},
   tool_args = {},
   tool_calls = {},
@@ -370,6 +371,12 @@ function M._remember_state(state)
     if ok then
       import_thread_provider_ui(coact_state.get_thread(previous_thread_id))
     end
+    runtime.active_turn_id = nil
+    runtime.last_turn_id = nil
+    runtime.queued_turns = {}
+    runtime.tool_output = {}
+    runtime.tool_args = {}
+    runtime.tool_calls = {}
   end
   attach_provider_ui(runtime.current_thread_id)
   return runtime.current_thread_id
@@ -383,13 +390,65 @@ local function current_thread_id()
   return runtime.current_thread_id or "pi:session"
 end
 
+local function reset_turn_stream_state()
+  runtime.tool_output = {}
+  runtime.tool_args = {}
+  runtime.tool_calls = {}
+end
+
+local function begin_turn(turn_id)
+  runtime.active_turn_id = turn_id or next_turn_id()
+  runtime.last_turn_id = runtime.active_turn_id
+  reset_turn_stream_state()
+  return runtime.active_turn_id
+end
+
 local function current_turn_id()
   if runtime.active_turn_id then
     return runtime.active_turn_id
   end
-  runtime.active_turn_id = next_turn_id()
-  runtime.last_turn_id = runtime.active_turn_id
-  return runtime.active_turn_id
+  return begin_turn(next_turn_id())
+end
+
+local function streaming_behavior(value)
+  value = util.value(value)
+  if value == "steer" or value == "followUp" then
+    return value
+  end
+  return nil
+end
+
+local function enqueue_turn(entry)
+  runtime.queued_turns = runtime.queued_turns or {}
+  table.insert(runtime.queued_turns, entry)
+end
+
+local function remove_queued_turn(turn_id)
+  for index, entry in ipairs(runtime.queued_turns or {}) do
+    if entry.id == turn_id then
+      table.remove(runtime.queued_turns, index)
+      return entry
+    end
+  end
+  return nil
+end
+
+local function take_queued_turn()
+  if type(runtime.queued_turns) == "table" and #runtime.queued_turns > 0 then
+    return table.remove(runtime.queued_turns, 1)
+  end
+  return nil
+end
+
+local function begin_event_turn()
+  if runtime.active_turn_id then
+    return runtime.active_turn_id, nil
+  end
+  local queued = take_queued_turn()
+  if queued then
+    return begin_turn(queued.id), queued
+  end
+  return current_turn_id(), nil
 end
 
 local function event_turn_id()
@@ -983,11 +1042,12 @@ function M.custom_request(rpc, method, params, callback)
   if method == "turn/start" then
     local turn_id = next_turn_id()
     runtime.current_thread_id = params.threadId or current_thread_id()
-    runtime.active_turn_id = turn_id
-    runtime.last_turn_id = turn_id
-    runtime.tool_output = {}
-    runtime.tool_args = {}
-    runtime.tool_calls = {}
+    local behavior = streaming_behavior(params.streamingBehavior)
+    local queued = behavior ~= nil
+      and (runtime.active_turn_id ~= nil or (type(runtime.queued_turns) == "table" and #runtime.queued_turns > 0))
+    if not queued then
+      begin_turn(turn_id)
+    end
     local message, images = prompt_from_input(params.input)
     if message == "" and #images == 0 then
       callback({ message = "Pi prompt is empty" }, nil)
@@ -996,10 +1056,30 @@ function M.custom_request(rpc, method, params, callback)
     rpc._request_message("prompt", {
       message = message,
       images = #images > 0 and images or nil,
-      streamingBehavior = params.streamingBehavior,
+      streamingBehavior = behavior,
     }, function(err)
       if err then
+        if queued then
+          remove_queued_turn(turn_id)
+        end
         callback(err, nil)
+        return
+      end
+      if queued then
+        enqueue_turn({
+          id = turn_id,
+          message = message,
+          input = vim.deepcopy(params.input),
+          streamingBehavior = behavior,
+        })
+        callback(nil, {
+          queued = true,
+          streamingBehavior = behavior,
+          turn = {
+            id = turn_id,
+            items = {},
+          },
+        })
         return
       end
       callback(nil, {
@@ -1352,14 +1432,22 @@ function M.decode_notification(message)
     return nil
   end
   local thread_id = current_thread_id()
-  local turn_id = event_turn_id()
+  local turn_id = runtime.active_turn_id or runtime.last_turn_id
 
   if message.type == "turn_start" then
+    local queued
+    turn_id, queued = begin_event_turn()
+    local turn = { id = turn_id }
+    if queued then
+      turn.items = { user_item(turn_id, queued.message, queued.input) }
+    end
     return notification("turn/started", {
       threadId = thread_id,
-      turn = { id = turn_id },
+      turn = turn,
     })
   end
+
+  turn_id = event_turn_id()
 
   if message.type == "turn_end" then
     local out = {}
