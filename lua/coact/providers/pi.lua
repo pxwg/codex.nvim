@@ -57,6 +57,7 @@ local runtime = {
   last_turn_id = nil,
   turn_seq = 0,
   provider_ui = nil,
+  branch_snapshot = nil,
   queued_turns = {},
   tool_output = {},
   tool_args = {},
@@ -373,6 +374,7 @@ function M._remember_state(state)
     end
     runtime.active_turn_id = nil
     runtime.last_turn_id = nil
+    runtime.branch_snapshot = nil
     runtime.queued_turns = {}
     runtime.tool_output = {}
     runtime.tool_args = {}
@@ -597,6 +599,138 @@ local function text_content(content)
     end
   end
   return table.concat(lines, "\n")
+end
+
+local function normalize_branch_snapshot(payload)
+  if type(payload) ~= "table" then
+    return nil
+  end
+  local entries = {}
+  for _, entry in ipairs(type(payload.entries) == "table" and payload.entries or {}) do
+    local role = util.value(entry.role)
+    local id = util.value(entry.id)
+    if id and (role == "user" or role == "assistant") then
+      table.insert(entries, {
+        id = tostring(id),
+        parentId = util.value(entry.parentId or entry.parent_id),
+        role = role,
+        text = tostring(util.value(entry.text) or ""),
+      })
+    end
+  end
+  return {
+    leafId = util.value(payload.leafId or payload.leaf_id),
+    entries = entries,
+  }
+end
+
+local function compact_snapshot_text(value)
+  return util.trim(tostring(value or ""):gsub("%s+", " "))
+end
+
+local function snapshot_text_matches(entry, text)
+  local entry_text = compact_snapshot_text(entry and entry.text)
+  local item_text = compact_snapshot_text(text)
+  if entry_text == "" or item_text == "" then
+    return true
+  end
+  return entry_text == item_text
+    or entry_text:find(item_text, 1, true) ~= nil
+    or item_text:find(entry_text, 1, true) ~= nil
+end
+
+local function snapshot_cursor(snapshot)
+  snapshot = normalize_branch_snapshot(snapshot)
+  local cursor = {
+    user = {},
+    assistant = {},
+    indices = { user = 1, assistant = 1 },
+  }
+  for _, entry in ipairs(snapshot and snapshot.entries or {}) do
+    if entry.role == "user" or entry.role == "assistant" then
+      table.insert(cursor[entry.role], entry)
+    end
+  end
+  return cursor
+end
+
+local function next_snapshot_entry(cursor, role, text)
+  if type(cursor) ~= "table" or (role ~= "user" and role ~= "assistant") then
+    return nil
+  end
+  local entries = cursor[role] or {}
+  local index = cursor.indices and cursor.indices[role] or 1
+  for candidate_index = index, #entries do
+    local entry = entries[candidate_index]
+    if snapshot_text_matches(entry, text) then
+      if cursor.indices then
+        cursor.indices[role] = candidate_index + 1
+      end
+      return entry
+    end
+  end
+  local entry = entries[index]
+  if cursor.indices then
+    cursor.indices[role] = index + 1
+  end
+  return entry
+end
+
+local function role_for_item(item)
+  if type(item) ~= "table" then
+    return nil
+  end
+  if item.type == "userMessage" then
+    return "user"
+  end
+  if item.type == "agentMessage" then
+    return "assistant"
+  end
+  return nil
+end
+
+local function item_snapshot_text(item)
+  if type(item) ~= "table" then
+    return ""
+  end
+  if item.type == "userMessage" then
+    return text_content(item.content)
+  end
+  if item.type == "agentMessage" then
+    return tostring(item.text or "")
+  end
+  return ""
+end
+
+local function annotate_thread_tree_entry_ids(thread, snapshot)
+  snapshot = normalize_branch_snapshot(snapshot)
+  if not (thread and snapshot and type(snapshot.entries) == "table") then
+    return false
+  end
+  local cursor = snapshot_cursor(snapshot)
+  local changed = false
+  for _, item_id in ipairs(thread.item_order or {}) do
+    local item = thread.items and thread.items[item_id]
+    local role = role_for_item(item)
+    if role then
+      local entry = next_snapshot_entry(cursor, role, item_snapshot_text(item))
+      if entry and item.treeEntryId ~= entry.id then
+        item.treeEntryId = entry.id
+        item.treeParentId = entry.parentId
+        changed = true
+      end
+    end
+  end
+  return changed
+end
+
+local function annotate_current_thread_tree_entry_ids(thread_id, snapshot)
+  local ok, coact_state = pcall(require, "coact.state")
+  if not ok then
+    return false
+  end
+  local thread = coact_state.get_thread(thread_id or runtime.current_thread_id or current_thread_id())
+  return annotate_thread_tree_entry_ids(thread, snapshot)
 end
 
 local function read_session_info(path, cwd_filter)
@@ -939,6 +1073,36 @@ local function normalize_commands_as_skills(commands)
   }
 end
 
+local function branch_snapshot_command_message()
+  return "/coact-nvim-branch-snapshot"
+end
+
+local function request_branch_snapshot(rpc, params, callback)
+  callback = callback or function() end
+  local ok, bridge = pcall(require, "coact.providers.pi_edit_bridge")
+  if not (ok and bridge.enabled and bridge.enabled()) then
+    callback(nil, nil)
+    return nil
+  end
+  runtime.branch_snapshot = nil
+  rpc._request_message("prompt", { message = branch_snapshot_command_message() }, function(err)
+    if err then
+      callback(err, nil)
+      return
+    end
+    callback(nil, runtime.branch_snapshot)
+  end)
+end
+
+local function tree_command_message(params)
+  local initial = params and (util.value(params.initialSelectedId) or util.value(params.initial_selected_id))
+  if initial == nil or initial == "" then
+    return "/coact-nvim-tree"
+  end
+  local ok, encoded = pcall(vim.json.encode, { initialSelectedId = tostring(initial) })
+  return "/coact-nvim-tree " .. (ok and encoded or tostring(initial))
+end
+
 local function read_current_thread(rpc, params, callback, opts)
   opts = opts or {}
   rpc._request_message("get_state", {}, function(err, state_result)
@@ -952,13 +1116,16 @@ local function read_current_thread(rpc, params, callback, opts)
     end
     request_session_stats(rpc, thread.id, function(_, stats_result)
       thread.token_usage = normalize_session_stats(stats_result) or thread.token_usage
-      rpc._request_message("get_messages", {}, function(messages_err, messages_result)
-        if messages_err then
+      request_branch_snapshot(rpc, params, function(_, branch_snapshot)
+        rpc._request_message("get_messages", {}, function(messages_err, messages_result)
+          if messages_err then
+            callback(nil, { thread = thread })
+            return
+          end
+          thread.turns =
+            M._turns_from_messages(messages_result and messages_result.messages, thread.id, branch_snapshot)
           callback(nil, { thread = thread })
-          return
-        end
-        thread.turns = M._turns_from_messages(messages_result and messages_result.messages, thread.id)
-        callback(nil, { thread = thread })
+        end)
       end)
     end)
   end)
@@ -1013,7 +1180,7 @@ function M.custom_request(rpc, method, params, callback)
 
   if method == "thread/tree" then
     runtime.current_thread_id = params.threadId or current_thread_id()
-    rpc._request_message("prompt", { message = "/coact-nvim-tree" }, function(err, result)
+    rpc._request_message("prompt", { message = tree_command_message(params) }, function(err, result)
       if err then
         callback(err, nil)
         return
@@ -1023,6 +1190,17 @@ function M.custom_request(rpc, method, params, callback)
         return
       end
       read_current_thread(rpc, params, callback, { replace_turns = true })
+    end)
+    return true
+  end
+
+  if method == "thread/treeSnapshot" then
+    runtime.current_thread_id = params.threadId or current_thread_id()
+    request_branch_snapshot(rpc, params, function(err, snapshot)
+      if snapshot then
+        annotate_current_thread_tree_entry_ids(params.threadId or runtime.current_thread_id, snapshot)
+      end
+      callback(err, { snapshot = snapshot })
     end)
     return true
   end
@@ -1198,6 +1376,19 @@ function M.custom_request(rpc, method, params, callback)
   return false
 end
 
+function M.on_generation_completed(payload)
+  local thread = payload and payload.thread or nil
+  local thread_id = thread and thread.id or runtime.current_thread_id or current_thread_id()
+  if not thread_id then
+    return
+  end
+  local ok, rpc = pcall(require, "coact.rpc")
+  if not (ok and rpc.is_running and rpc.is_running()) then
+    return
+  end
+  rpc.request("thread/treeSnapshot", { threadId = thread_id }, function() end)
+end
+
 local function assistant_item_id(index)
   return current_turn_id() .. ":assistant:" .. tostring(index or 0)
 end
@@ -1327,7 +1518,7 @@ local function tool_update_delta(tool_call_id, result)
   return text
 end
 
-local function message_items(message, status)
+local function message_items(message, status, tree_entry)
   local items = {}
   if type(message) ~= "table" or message.role ~= "assistant" then
     return items
@@ -1340,6 +1531,8 @@ local function message_items(message, status)
         type = "agentMessage",
         status = status,
         text = tostring(block.text or ""),
+        treeEntryId = tree_entry and tree_entry.id or nil,
+        treeParentId = tree_entry and tree_entry.parentId or nil,
       })
     elseif block.type == "thinking" then
       table.insert(items, {
@@ -1384,11 +1577,14 @@ local function notifications(entries)
   return out
 end
 
-function M._turns_from_messages(messages, thread_id)
+function M._turns_from_messages(messages, thread_id, branch_snapshot)
   local turns = {}
   local turn_index = 0
+  local tree_cursor = snapshot_cursor(branch_snapshot)
   for _, message in ipairs(type(messages) == "table" and messages or {}) do
     if message.role == "user" then
+      local message_text = text_content(message.content)
+      local tree_entry = next_snapshot_entry(tree_cursor, "user", message_text)
       turn_index = turn_index + 1
       table.insert(turns, {
         id = ("pi-history-%d"):format(turn_index),
@@ -1400,13 +1596,16 @@ function M._turns_from_messages(messages, thread_id)
             content = {
               {
                 type = "text",
-                text = text_content(message.content),
+                text = message_text,
               },
             },
+            treeEntryId = tree_entry and tree_entry.id or nil,
+            treeParentId = tree_entry and tree_entry.parentId or nil,
           },
         },
       })
     elseif message.role == "assistant" then
+      local tree_entry = next_snapshot_entry(tree_cursor, "assistant", text_content(message.content))
       local turn = turns[#turns]
       if not turn then
         turn_index = turn_index + 1
@@ -1415,7 +1614,7 @@ function M._turns_from_messages(messages, thread_id)
       end
       local old_turn = runtime.active_turn_id
       runtime.active_turn_id = turn.id
-      vim.list_extend(turn.items, message_items(message, "completed"))
+      vim.list_extend(turn.items, message_items(message, "completed", tree_entry))
       runtime.active_turn_id = old_turn
     elseif message.role == "toolResult" then
       local turn = turns[#turns]
@@ -1657,6 +1856,18 @@ local function extension_prompt(message, fallback)
   return util.value(message.title) or util.value(message.message) or fallback
 end
 
+local function branch_snapshot_request(message)
+  local options = type(message) == "table" and type(message.options) == "table" and message.options or {}
+  return type(options[1]) == "table" and options[1].__coactNvimPiBranchSnapshot == true
+end
+
+local function handle_branch_snapshot_request(message, rpc)
+  local options = type(message.options) == "table" and message.options or {}
+  runtime.branch_snapshot = normalize_branch_snapshot(options[1])
+  annotate_current_thread_tree_entry_ids(runtime.current_thread_id or current_thread_id(), runtime.branch_snapshot)
+  extension_response(rpc, message, { value = "ok" })
+end
+
 local function provider_ui_thread()
   local ok, coact_state = pcall(require, "coact.state")
   if not ok then
@@ -1761,6 +1972,10 @@ function M.handle_raw_message(message, rpc)
     return true
   end
   if message.method == "select" then
+    if branch_snapshot_request(message) then
+      handle_branch_snapshot_request(message, rpc)
+      return true
+    end
     local ok, pi_tree = pcall(require, "coact.providers.pi_tree")
     if ok and pi_tree.is_request(message) then
       vim.schedule(function()

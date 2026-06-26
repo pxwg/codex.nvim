@@ -433,8 +433,11 @@ do
     "Pi edit bridge edit prompt should discourage autonomous bulk generation"
   )
   assert(
-    pi_extension_source:match('registerCommand%("coact%-nvim%-tree"') and pi_extension_source:match("navigateTree"),
-    "Pi edit bridge extension should register tree navigation"
+    pi_extension_source:match('registerCommand%("coact%-nvim%-tree"')
+      and pi_extension_source:match("navigateTree")
+      and pi_extension_source:match('registerCommand%("coact%-nvim%-branch%-snapshot"')
+      and pi_extension_source:match("__coactNvimPiBranchSnapshot"),
+    "Pi edit bridge extension should register tree navigation and branch snapshots"
   );
   (function()
     local pi_tree = require("coact.providers.pi_tree")
@@ -518,6 +521,7 @@ do
     local picker_payload = {
       __coactNvimPiTree = true,
       leafId = "root-user",
+      initialSelectedId = "assistant",
       tree = {
         {
           entry = {
@@ -566,6 +570,12 @@ do
       end
     end
     assert(assistant_row, "Pi tree picker smoke should find the second row")
+    local initially_selected_line = vim.api.nvim_buf_get_lines(picker_bufnr, assistant_row - 1, assistant_row, false)[1]
+      or ""
+    assert(
+      initially_selected_line:match("^›") and initially_selected_line:find("assistant: second row", 1, true),
+      "Pi tree picker should honor initialSelectedId"
+    )
     vim.api.nvim_win_set_cursor(vim.api.nvim_get_current_win(), { assistant_row, 0 })
     vim.cmd("doautocmd <nomodeline> CursorMoved")
     local synced_line = vim.api.nvim_buf_get_lines(picker_bufnr, assistant_row - 1, assistant_row, false)[1] or ""
@@ -777,6 +787,46 @@ do
         and pi_ui_sent[1].value == "second",
       "Pi extension select should respond with the selected value"
     )
+    local saved_snapshot_runtime_thread_id = pi_provider._runtime.current_thread_id
+    pi_provider._runtime.current_thread_id = "pi:branch-snapshot-smoke"
+    local snapshot_thread = state.ensure_thread("pi:branch-snapshot-smoke")
+    state.upsert_item("pi:branch-snapshot-smoke", "tree-turn", {
+      id = "tree-user-item",
+      type = "userMessage",
+      content = { { type = "text", text = "snapshot user" } },
+    })
+    state.upsert_item("pi:branch-snapshot-smoke", "tree-turn", {
+      id = "tree-assistant-item",
+      type = "agentMessage",
+      text = "snapshot assistant",
+    })
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-branch-snapshot-smoke",
+        method = "select",
+        title = "Coact Pi branch snapshot",
+        options = {
+          {
+            __coactNvimPiBranchSnapshot = true,
+            entries = {
+              { id = "entry-user-smoke", role = "user", text = "snapshot user" },
+              { id = "entry-assistant-smoke", role = "assistant", text = "snapshot assistant" },
+            },
+          },
+        },
+      }, pi_ui_rpc),
+      "Pi provider should handle branch snapshot sync requests"
+    )
+    assert(
+      snapshot_thread.items["tree-user-item"].treeEntryId == "entry-user-smoke"
+        and snapshot_thread.items["tree-assistant-item"].treeEntryId == "entry-assistant-smoke"
+        and pi_provider._runtime.branch_snapshot.entries[1].id == "entry-user-smoke"
+        and pi_ui_sent[#pi_ui_sent].id == "pi-branch-snapshot-smoke"
+        and pi_ui_sent[#pi_ui_sent].value == "ok",
+      "Pi branch snapshot sync should annotate existing user and assistant items without a picker"
+    )
+    pi_provider._runtime.current_thread_id = saved_snapshot_runtime_thread_id
     assert(
       pi_provider.handle_raw_message({
         type = "extension_ui_request",
@@ -897,6 +947,10 @@ do
     assert(type(vim.fn.maparg("gs", "n", false, true).callback) == "function", "history should bind gs status detail")
     assert(type(vim.fn.maparg("gS", "n", false, true).callback) == "function", "history should bind gS status toggle")
     assert(type(vim.fn.maparg("gt", "n", false, true).callback) == "function", "history should bind gt Pi tree")
+    assert(
+      type(vim.fn.maparg("gT", "n", false, true).callback) == "function",
+      "history should bind gT Pi tree at message"
+    )
     assert(type(vim.fn.maparg("gc", "n", false, true).callback) == "function", "history should bind gc status")
     assert(type(vim.fn.maparg("gy", "n", false, true).callback) == "function", "history should bind gy copy")
     assert(type(vim.fn.maparg("gd", "n", false, true).callback) == "function", "history should bind gd diff")
@@ -1104,6 +1158,14 @@ do
             tokens = { input = 100, output = 50, total = 150 },
             autoCompactionEnabled = true,
           })
+        elseif method == "prompt" then
+          assert(params.message == "/coact-nvim-branch-snapshot", "Pi resume should request a branch snapshot")
+          pi_provider._runtime.branch_snapshot = {
+            entries = {
+              { id = "entry-old-user", role = "user", text = "old pi prompt" },
+            },
+          }
+          callback(nil, {})
         elseif method == "get_messages" then
           callback(nil, {
             messages = {
@@ -1132,12 +1194,13 @@ do
   )
   assert(pi_resume_handled, "Pi provider should handle thread/resume")
   assert(
-    #pi_resume_calls == 4
+    #pi_resume_calls == 5
       and pi_resume_calls[1].method == "switch_session"
       and pi_resume_calls[1].params.sessionPath == pi_old_session_file
       and pi_resume_calls[2].method == "get_state"
       and pi_resume_calls[3].method == "get_session_stats"
-      and pi_resume_calls[4].method == "get_messages",
+      and pi_resume_calls[4].method == "prompt"
+      and pi_resume_calls[5].method == "get_messages",
     "Pi resume should switch to the selected native session before reading messages"
   )
   assert(
@@ -1145,6 +1208,7 @@ do
       and pi_resume_result.thread.id == "pi:pi-old"
       and pi_resume_result.thread.turns
       and #pi_resume_result.thread.turns == 1
+      and pi_resume_result.thread.turns[1].items[1].treeEntryId == "entry-old-user"
       and pi_resume_result.thread.token_usage.contextUsage.percent == 12.5,
     "Pi resume should return the selected historical thread with session stats"
   );
@@ -1156,8 +1220,19 @@ do
         _request_message = function(method, params, callback)
           table.insert(pi_tree_calls, { method = method, params = params })
           if method == "prompt" then
-            assert(params.message == "/coact-nvim-tree", "Pi thread/tree should invoke the bridge command")
-            callback(nil, {})
+            if params.message:find("/coact-nvim-tree", 1, true) == 1 then
+              assert(params.message:find("entry-tree-user", 1, true), "Pi thread/tree should forward initialSelectedId")
+              callback(nil, {})
+            elseif params.message == "/coact-nvim-branch-snapshot" then
+              pi_provider._runtime.branch_snapshot = {
+                entries = {
+                  { id = "entry-tree-user", role = "user", text = "tree-selected prompt" },
+                },
+              }
+              callback(nil, {})
+            else
+              error("unexpected Pi tree prompt: " .. tostring(params.message))
+            end
           elseif method == "get_state" then
             callback(nil, {
               sessionId = "pi-old",
@@ -1189,7 +1264,7 @@ do
         end,
       },
       "thread/tree",
-      { cwd = pi_cwd, threadId = "pi:pi-old" },
+      { cwd = pi_cwd, threadId = "pi:pi-old", initialSelectedId = "entry-tree-user" },
       function(err, result)
         assert(not err, "Pi thread/tree should not fail in smoke")
         pi_tree_result = result
@@ -1197,18 +1272,22 @@ do
     )
     assert(pi_tree_handled, "Pi provider should handle thread/tree")
     assert(
-      #pi_tree_calls == 4
+      #pi_tree_calls == 5
         and pi_tree_calls[1].method == "prompt"
+        and pi_tree_calls[1].params.message:find("entry-tree-user", 1, true)
         and pi_tree_calls[2].method == "get_state"
         and pi_tree_calls[3].method == "get_session_stats"
-        and pi_tree_calls[4].method == "get_messages",
+        and pi_tree_calls[4].method == "prompt"
+        and pi_tree_calls[4].params.message == "/coact-nvim-branch-snapshot"
+        and pi_tree_calls[5].method == "get_messages",
       "Pi thread/tree should navigate before refreshing current messages"
     )
     assert(
       pi_tree_result
         and pi_tree_result.thread.replaceTurns == true
         and pi_tree_result.thread.turns
-        and pi_tree_result.thread.turns[1].items[1].content[1].text == "tree-selected prompt",
+        and pi_tree_result.thread.turns[1].items[1].content[1].text == "tree-selected prompt"
+        and pi_tree_result.thread.turns[1].items[1].treeEntryId == "entry-tree-user",
       "Pi thread/tree should return a replacement branch snapshot"
     )
   end)();
@@ -3126,7 +3205,7 @@ do
         },
       })
     end
-    slash.dispatch("/tree", "pi-thread-tree", {
+    slash.dispatch("/tree entry-target", "pi-thread-tree", {
       ensure_server = function(callback)
         callback()
       end,
@@ -3134,6 +3213,7 @@ do
     rpc.request = original_rpc_request
     util.notify = original_notify
     assert(pi_tree_request.threadId == "pi-thread-tree", "Pi /tree should target the active thread")
+    assert(pi_tree_request.initialSelectedId == "entry-target", "Pi /tree should pass an initial selected entry id")
     assert(pi_tree_notice == "Pi tree updated", "Pi /tree should notify after refreshing the thread")
     assert(state.get_thread("pi-thread-tree").items["tree-item"], "Pi /tree should update thread state from result")
     coact.setup()

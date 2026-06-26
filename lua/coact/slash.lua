@@ -1342,26 +1342,31 @@ local function fork_thread(actions, thread_id, ephemeral)
   end)
 end
 
-local function open_tree(actions, thread_id)
+local function open_tree(actions, thread_id, opts)
   local id = need_thread(thread_id)
   if not id then
     return
   end
+  opts = opts or {}
   ensure_server(actions, function()
-    rpc.request("thread/tree", { threadId = id, cwd = config.cwd() }, function(err, result)
-      if err then
-        present_result(notify_result("thread/tree failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
-        return
+    rpc.request(
+      "thread/tree",
+      { threadId = id, cwd = config.cwd(), initialSelectedId = opts.initialSelectedId },
+      function(err, result)
+        if err then
+          present_result(notify_result("thread/tree failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
+          return
+        end
+        local thread_payload = as_table_or_nil(field(result, "thread"))
+        if not thread_payload then
+          present_result(notify_result("thread/tree returned no thread", vim.log.levels.ERROR))
+          return
+        end
+        local thread = state.update_thread_from_payload(thread_payload)
+        require("coact.buffers").schedule_render(thread.id)
+        present_result(notify_result(provider_title() .. " tree updated"))
       end
-      local thread_payload = as_table_or_nil(field(result, "thread"))
-      if not thread_payload then
-        present_result(notify_result("thread/tree returned no thread", vim.log.levels.ERROR))
-        return
-      end
-      local thread = state.update_thread_from_payload(thread_payload)
-      require("coact.buffers").schedule_render(thread.id)
-      present_result(notify_result(provider_title() .. " tree updated"))
-    end)
+    )
   end)
 end
 
@@ -1659,7 +1664,8 @@ local handlers = {
     end
   end,
   tree = function(args, actions, thread_id)
-    open_tree(actions, thread_id)
+    local initial = args and args[1] ~= "" and args[1] or nil
+    open_tree(actions, thread_id, { initialSelectedId = initial })
   end,
   review = function(args, actions, thread_id)
     start_review(actions, thread_id)

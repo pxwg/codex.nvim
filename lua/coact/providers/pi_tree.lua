@@ -735,6 +735,8 @@ local function make_state(payload)
   local node_map, parent_map = build_maps(roots)
   local leaf_id = value(payload.leafId) or value(payload.leaf_id)
   leaf_id = leaf_id and tostring(leaf_id) or nil
+  local initial_selected_id = value(payload.initialSelectedId) or value(payload.initial_selected_id)
+  initial_selected_id = initial_selected_id and tostring(initial_selected_id) or nil
   local state = {
     roots = roots,
     node_map = node_map,
@@ -744,7 +746,7 @@ local function make_state(payload)
     filter_mode = "default",
     search_query = "",
     selected_index = 1,
-    last_selected_id = leaf_id,
+    last_selected_id = initial_selected_id or leaf_id,
     filtered_nodes = {},
   }
   state.flat_nodes = flatten_tree(state)

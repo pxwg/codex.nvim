@@ -338,6 +338,8 @@ item_converters.userMessage = function(item, turn_id)
     type = "UserBlock",
     message_id = turn_id,
     item_id = item.id,
+    treeEntryId = util.value(item.treeEntryId or item.tree_entry_id),
+    treeParentId = util.value(item.treeParentId or item.tree_parent_id),
     text = user_text(item.content, { display = true }),
     state = status_of(item),
     metadata = {
@@ -354,6 +356,8 @@ item_converters.agentMessage = function(item, turn_id)
     type = "AssistantBlock",
     message_id = turn_id,
     item_id = item.id,
+    treeEntryId = util.value(item.treeEntryId or item.tree_entry_id),
+    treeParentId = util.value(item.treeParentId or item.tree_parent_id),
     text = item.text or "",
     state = status_of(item),
     raw = item,

@@ -417,8 +417,43 @@ function collectEntries(nodes, out = new Map()) {
   return out;
 }
 
-async function handleTreeCommand(ctx) {
+function parseTreeArgs(args) {
+  const raw = String(args || "").trim();
+  if (!raw) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return { initialSelectedId: raw };
+  }
+}
+
+function branchSnapshotPayload(ctx) {
+  const entries = (ctx.sessionManager.getBranch() || [])
+    .filter((entry) => entry?.type === "message" && (entry.message?.role === "user" || entry.message?.role === "assistant"))
+    .map((entry) => ({
+      id: String(entry.id),
+      parentId: entry.parentId ?? undefined,
+      role: entry.message.role,
+      text: textContent(entry.message.content),
+    }));
+  return {
+    __coactNvimPiBranchSnapshot: true,
+    leafId: ctx.sessionManager.getLeafId(),
+    entries,
+  };
+}
+
+async function handleBranchSnapshotCommand(ctx) {
+  await ctx.ui.select("Coact Pi branch snapshot", [branchSnapshotPayload(ctx)]);
+}
+
+async function handleTreeCommand(args, ctx) {
   await ctx.waitForIdle();
+  const parsedArgs = parseTreeArgs(args);
+  const initialSelectedId = parsedArgs.initialSelectedId ? String(parsedArgs.initialSelectedId) : undefined;
   const tree = ctx.sessionManager.getTree() || [];
   if (!tree.length) {
     ctx.ui.notify("No entries in session", "warning");
@@ -434,6 +469,7 @@ async function handleTreeCommand(ctx) {
       tree,
       leafId,
       activePathIds: Array.from(branchIds),
+      initialSelectedId,
     },
   ]);
   if (!selectedId) {
@@ -485,8 +521,15 @@ async function handleTreeCommand(ctx) {
 export default function (pi) {
   pi.registerCommand("coact-nvim-tree", {
     description: "Navigate the current session tree from coact.nvim",
+    handler: async (args, ctx) => {
+      await handleTreeCommand(args, ctx);
+    },
+  });
+
+  pi.registerCommand("coact-nvim-branch-snapshot", {
+    description: "Synchronize Pi session tree entry ids with coact.nvim",
     handler: async (_args, ctx) => {
-      await handleTreeCommand(ctx);
+      await handleBranchSnapshotCommand(ctx);
     },
   });
 

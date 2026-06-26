@@ -485,7 +485,15 @@ handlers["turn/completed"] = function(params)
   else
     set_generation(thread, "idle", nil)
   end
-  hooks.emit("generation_completed", { thread = thread, turn = params.turn })
+  local event = { thread = thread, turn = params.turn }
+  hooks.emit("generation_completed", event)
+  local provider = providers.current()
+  if type(provider.on_generation_completed) == "function" then
+    local ok, err = pcall(provider.on_generation_completed, event)
+    if not ok then
+      util.notify("coact.nvim provider generation hook failed: " .. tostring(err), vim.log.levels.ERROR)
+    end
+  end
   schedule(params.threadId)
 end
 

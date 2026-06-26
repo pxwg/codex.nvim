@@ -65,6 +65,9 @@ function M.lines_for(block)
   if block and block.item_id then
     table.insert(lines, "item: " .. tostring(block.item_id))
   end
+  if block and block.treeEntryId then
+    table.insert(lines, "tree: " .. tostring(block.treeEntryId))
+  end
   if block and block.message_id then
     table.insert(lines, "turn: " .. tostring(block.message_id))
   end
