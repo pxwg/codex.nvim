@@ -12,6 +12,8 @@ local ns = vim.api.nvim_create_namespace("coact.nvim")
 local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
+local highlights_ready = false
+local highlights_autocmd_ready = false
 
 local foldable_types = {
   UserBlock = true,
@@ -67,7 +69,7 @@ local stream_decoration_by_type = {
   PlanBlock = { kind = "plan", marker = "▎ ", hl_group = "CoactStreamPlan" },
 }
 
-local function setup_highlights()
+local function define_highlights()
   vim.api.nvim_set_hl(0, "CoactHeaderUser", { default = true, link = "Identifier" })
   vim.api.nvim_set_hl(0, "CoactHeaderAssistant", { default = true, link = "Title" })
   vim.api.nvim_set_hl(0, "CoactHeaderAgent", { default = true, link = "DiagnosticOk" })
@@ -98,6 +100,21 @@ local function setup_highlights()
   vim.api.nvim_set_hl(0, "CoactStatusLineWidget", { default = true, link = "String" })
   vim.api.nvim_set_hl(0, "CoactStatusLineHint", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactStatusLineSeparator", { default = true, link = "Delimiter" })
+end
+
+local function setup_highlights()
+  if highlights_ready then
+    return
+  end
+  define_highlights()
+  highlights_ready = true
+  if not highlights_autocmd_ready then
+    vim.api.nvim_create_autocmd("ColorScheme", {
+      group = vim.api.nvim_create_augroup("coact.nvim.ui.highlights", { clear = true }),
+      callback = define_highlights,
+    })
+    highlights_autocmd_ready = true
+  end
 end
 
 M.setup_highlights = setup_highlights
@@ -183,11 +200,24 @@ end
 
 local function truncate_display(value, limit)
   value = tostring(value or "")
-  limit = limit or 96
-  if #value <= limit then
+  limit = tonumber(limit) or 96
+  if limit <= 0 then
+    return ""
+  end
+  if vim.fn.strdisplaywidth(value) <= limit then
     return value
   end
-  return value:sub(1, limit - 1) .. "..."
+  local suffix = "..."
+  local target_width = math.max(0, limit - vim.fn.strdisplaywidth(suffix))
+  local out = ""
+  for index = 1, vim.fn.strchars(value) do
+    local candidate = vim.fn.strcharpart(value, 0, index)
+    if vim.fn.strdisplaywidth(candidate) > target_width then
+      break
+    end
+    out = candidate
+  end
+  return out .. suffix
 end
 
 local function line_count(value)
@@ -611,23 +641,24 @@ end
 
 local function apply_reasoning_marks(thread, bufnr)
   for _, mark in ipairs(thread.reasoning_marks or {}) do
-    for lnum = mark.start_line, mark.finish_line do
-      local line = vim.api.nvim_buf_get_lines(bufnr, lnum - 1, lnum, false)[1] or ""
-      vim.api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
+    local lines = vim.api.nvim_buf_get_lines(bufnr, mark.start_line - 1, mark.finish_line, false)
+    if #lines > 0 then
+      vim.api.nvim_buf_set_extmark(bufnr, ns, mark.start_line - 1, 0, {
+        end_row = mark.finish_line - 1,
+        end_col = #(lines[#lines] or ""),
+        hl_group = "CoactReasoningText",
+        hl_mode = "combine",
+        priority = 900,
+        strict = false,
+      })
+    end
+    for offset = 1, #lines do
+      vim.api.nvim_buf_set_extmark(bufnr, ns, mark.start_line + offset - 2, 0, {
         virt_text = { { "▏ ", "CoactReasoningBorder" } },
         virt_text_pos = "inline",
         priority = 1200,
         strict = false,
       })
-      if line ~= "" then
-        vim.api.nvim_buf_set_extmark(bufnr, ns, lnum - 1, 0, {
-          end_col = #line,
-          hl_group = "CoactReasoningText",
-          hl_mode = "combine",
-          priority = 900,
-          strict = false,
-        })
-      end
     end
   end
 end
@@ -1253,35 +1284,44 @@ local function replace_buffer_lines(bufnr, lines)
   return true
 end
 
-function _G.CoactFoldExpr(lnum)
-  local thread = require("coact.state").thread_for_buf(0)
-  if not thread then
-    return "0"
-  end
-  return (thread.fold_levels and thread.fold_levels[lnum]) or "0"
-end
-
-local function build_fold_levels(thread)
-  local levels = {}
-  for _, fold in ipairs(thread.folds or {}) do
-    if fold.finish and fold.start and fold.finish > fold.start then
-      levels[fold.start] = ">1"
-      for lnum = fold.start + 1, fold.finish - 1 do
-        levels[lnum] = "1"
-      end
-      levels[fold.finish] = "<1"
-    end
-  end
-  thread.fold_levels = levels
-end
-
 local function update_fold_finish(thread, range, finish)
   if not range.fold_index or not thread.folds or not thread.folds[range.fold_index] then
     return
   end
   thread.folds[range.fold_index].finish = finish
-  build_fold_levels(thread)
 end
+
+local function apply_manual_folds(thread, bufnr)
+  bufnr = bufnr or (thread and thread.bufnr)
+  if not thread or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
+    return
+  end
+  local line_total = vim.api.nvim_buf_line_count(bufnr)
+  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
+    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == bufnr then
+      vim.api.nvim_win_call(win, function()
+        local view = vim.fn.winsaveview()
+        vim.wo[win].foldmethod = "manual"
+        vim.wo[win].foldenable = true
+        vim.wo[win].foldlevel = 99
+        vim.cmd("silent! normal! zE")
+        for _, fold in ipairs(thread.folds or {}) do
+          local start_line = tonumber(fold.start)
+          local finish_line = tonumber(fold.finish)
+          if start_line and finish_line and finish_line > start_line and start_line >= 1 then
+            finish_line = math.min(finish_line, line_total)
+            if finish_line > start_line then
+              vim.cmd(("silent! %d,%dfold"):format(start_line, finish_line))
+            end
+          end
+        end
+        vim.fn.winrestview(view)
+      end)
+    end
+  end
+end
+
+M.apply_manual_folds = apply_manual_folds
 
 local function remove_auto_closed_fence_line(thread, line)
   if not line then
@@ -1635,7 +1675,6 @@ function M.render(thread)
   thread.stream_decoration_marks = {}
   thread.spinner_mark = nil
   thread.folds = {}
-  thread.fold_levels = {}
 
   local lines = {}
   local title_line
@@ -1662,8 +1701,6 @@ function M.render(thread)
     add(lines, "")
   end
 
-  build_fold_levels(thread)
-
   vim.bo[bufnr].modifiable = true
   replace_buffer_lines(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
@@ -1685,6 +1722,7 @@ function M.render(thread)
   end
 
   apply_window_views(thread, bufnr, snapshots)
+  apply_manual_folds(thread, bufnr)
   prune_view_states(thread, bufnr)
   local buffers = require("coact.buffers")
   buffers.refresh_composer(thread)

@@ -4002,8 +4002,9 @@ local extmarks =
 assert(#extmarks > 0, "render should create extmarks")
 assert(#(thread.placeholder_marks or {}) >= 2, "reasoning and tool blocks should be placeholders")
 assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
-assert(thread.fold_levels and thread.fold_levels[3] == ">1", "render should create fold levels for user blocks")
-assert(_G.CoactFoldExpr(3) == ">1", "foldexpr should read thread fold levels")
+assert(thread.folds and thread.folds[1] and thread.folds[1].start == 3, "render should record user block folds")
+assert(vim.wo.foldmethod == "manual", "history windows should use manual folds")
+assert(vim.fn.foldlevel(3) == 1, "render should create manual folds for user blocks")
 local detail_lines = require("coact.ui.detail").lines_for(thread.placeholder_marks[1].block)
 assert(table.concat(detail_lines, "\n"):match("# Reasoning"), "detail should render block title")
 

@@ -41,8 +41,8 @@ local history_window_options = {
   foldcolumn = "0",
   wrap = true,
   linebreak = true,
-  foldmethod = "expr",
-  foldexpr = "v:lua.CoactFoldExpr(v:lnum)",
+  foldmethod = "manual",
+  foldexpr = "0",
   foldenable = true,
   foldlevel = 99,
 }
@@ -734,6 +734,7 @@ function M.apply_window_options(win, bufnr)
   else
     set_window_option(win, "conceallevel", math.max(vim.wo[win].conceallevel, 1))
     set_window_option(win, "winbar", history_winbar(thread))
+    render.apply_manual_folds(thread, bufnr)
   end
 end
 

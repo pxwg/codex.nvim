@@ -157,7 +157,6 @@ function M.ensure_thread(thread_id, attrs)
       render_index = {},
       view_state = {},
       folds = {},
-      fold_levels = {},
       pending_request = nil,
       status_message = nil,
       last_error = nil,
@@ -245,7 +244,6 @@ function M.update_thread_from_payload(payload)
     thread.turn_settings = {}
     thread.render_index = {}
     thread.folds = {}
-    thread.fold_levels = {}
   end
   M.apply_thread_settings(thread, payload)
   if payload.turns then
