@@ -78,7 +78,6 @@ local function define_highlights()
   vim.api.nvim_set_hl(0, "CoactHeaderAgent", { default = true, link = "DiagnosticOk" })
   vim.api.nvim_set_hl(0, "CoactHeaderSection", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "CoactHeaderMeta", { default = true, link = "Comment" })
-  vim.api.nvim_set_hl(0, "CoactHeaderSeparator", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactSpinner", { default = true, link = "DiagnosticInfo" })
   vim.api.nvim_set_hl(0, "CoactReasoningText", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactReasoningBorder", { default = true, link = "DiagnosticHint" })
@@ -263,11 +262,6 @@ local function chunks_width(chunks)
   return width
 end
 
-local function repeat_to_width(text, target_width)
-  local unit_width = math.max(1, vim.fn.strdisplaywidth(text))
-  return string.rep(text, math.max(1, math.ceil(target_width / unit_width)))
-end
-
 local function window_text_width(win)
   local width = vim.api.nvim_win_get_width(win)
   local ok, info = pcall(vim.fn.getwininfo, win)
@@ -287,16 +281,6 @@ local function narrowest_buffer_text_width(bufnr)
     end
   end
   return math.max(20, found and width or vim.o.columns)
-end
-
-local function header_target_width(bufnr)
-  local width = vim.o.columns
-  for _, win in ipairs(vim.fn.win_findbuf(bufnr)) do
-    if vim.api.nvim_win_is_valid(win) then
-      width = math.max(width, window_text_width(win))
-    end
-  end
-  return width + 32
 end
 
 local function meta_chunk(item)
@@ -535,38 +519,48 @@ local function mark_placeholder(thread, line, key, block, body_lines)
   return mark
 end
 
-local function header_virt_text(mark, target_width)
-  local title = " " .. tostring(mark.title or "") .. " "
-  local chunks = { { title, header_hl(mark.kind) } }
+local function header_virt_text(mark)
+  local hl_group = header_hl(mark.kind)
+  return {
+    { "▍ ", hl_group },
+    { tostring(mark.title or ""), hl_group },
+  }
+end
+
+local function header_meta_virt_text(mark)
+  local chunks = {}
   if mark.meta and #mark.meta > 0 then
-    table.insert(chunks, { " ", "CoactHeaderMeta" })
     for index, item in ipairs(mark.meta) do
       local text, hl_group = meta_chunk(item)
       if text ~= "" and text ~= "nil" then
-        if index > 1 then
+        if #chunks > 0 then
           table.insert(chunks, { " · ", "CoactHeaderMeta" })
         end
         table.insert(chunks, { text, hl_group })
       end
     end
-    table.insert(chunks, { " ", "CoactHeaderMeta" })
   end
-  local sep = config.get().render.separator or "---"
-  local remaining = math.max(vim.fn.strdisplaywidth(sep), target_width - chunks_width(chunks))
-  table.insert(chunks, { repeat_to_width(sep, remaining), "CoactHeaderSeparator" })
   return chunks
 end
 
 local function apply_header_marks(thread, bufnr)
-  local target_width = header_target_width(bufnr)
   for _, mark in ipairs(thread.header_marks or {}) do
     vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
       conceal = "",
-      virt_text = header_virt_text(mark, target_width),
+      virt_text = header_virt_text(mark),
       virt_text_pos = "overlay",
       priority = 2000,
       strict = false,
     })
+    local meta = header_meta_virt_text(mark)
+    if #meta > 0 then
+      vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
+        virt_text = meta,
+        virt_text_pos = "right_align",
+        priority = 1900,
+        strict = false,
+      })
+    end
     if mark.block then
       thread.render_index[mark.line] = mark.block
     end

@@ -119,7 +119,6 @@ Default options:
     },
     render = {
       prompt_marker = "## Prompt",
-      separator = "───",
       show_raw_events = false,
       virtual_blocks = {
         default_expanded = false,
@@ -443,18 +442,20 @@ The block types include:
   RawEventBlock
 <
 
-Headers are rendered through overlay extmarks. Reasoning/tool/patch/agent
-blocks are placeholders with virtual body lines. Busy turns show a spinner
-whose label follows the current generation state: thinking, reasoning,
-streaming, tooling, patch review, syncing, or stopping.
+Headers keep markdown heading lines in the transcript buffer and render compact
+role labels through overlay extmarks; header metadata is right-aligned with
+extmarks. Reasoning/tool/patch/agent blocks are placeholders with virtual body
+lines. Busy turns show a spinner whose label follows the current generation
+state: thinking, reasoning, streaming, tooling, patch review, syncing, or
+stopping.
 
 The renderer tracks per-window view state. A transcript window near the bottom
 follows the conversation while the active provider streams. Cursor movement or scrolling away
 suspends that follow state for that window.
 
-Rendered user/assistant/error sections populate Vim fold ranges through
-`v:lua.CoactFoldExpr(v:lnum)`. Coact windows keep `foldlevel` high by default,
-so the folds are available without collapsing the transcript on open.
+Rendered user/assistant/error sections populate manual Vim fold ranges. Coact
+windows keep `foldlevel` high by default, so the folds are available without
+collapsing the transcript on open.
 
 App-server lifecycle notifications such as hooks, auto-approval reviews,
 server-request resolution, context compaction, and model reroutes become

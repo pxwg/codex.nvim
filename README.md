@@ -129,7 +129,6 @@ require("coact").setup({
   },
   render = {
     prompt_marker = "## Prompt",
-    separator = "───",
     show_raw_events = false,
     virtual_blocks = {
       default_expanded = false,
@@ -325,7 +324,7 @@ The plugin follows the same shape as a native Neovim chat client:
 - `lua/coact/context.lua`: source-buffer tracking for prompt context and Neovim dynamic tools.
 - `lua/coact/events.lua`: normalized provider item to modern Neovim TUI block conversion.
 - `lua/coact/buffers.lua`: `coact://thread/<id>` `coact-history` transcript buffers, unnamed `coact-input` composer buffers, window option management, prompt collection, and block keymaps.
-- `lua/coact/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, view follow, and foldexpr ranges.
+- `lua/coact/ui/render.lua`: extmark TUI renderer for headers, placeholders, virtual lines, spinner, stream gutters, composer tokens, view follow, and manual fold ranges.
 - `lua/coact/ui/tool_renderers.lua`: smart renderers for command, patch, and generic tool output.
 - `lua/coact/ui/detail.lua`: scratch detail buffers for the block under cursor.
 - `lua/coact/patch_review.lua`: app-server patch proposal review UI.
