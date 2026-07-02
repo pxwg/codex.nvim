@@ -545,8 +545,10 @@ end
 
 local function apply_header_marks(thread, bufnr)
   for _, mark in ipairs(thread.header_marks or {}) do
+    local line = vim.api.nvim_buf_get_lines(bufnr, mark.line - 1, mark.line, false)[1] or ""
     vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
       conceal = "",
+      end_col = #line,
       virt_text = header_virt_text(mark),
       virt_text_pos = "overlay",
       priority = 2000,

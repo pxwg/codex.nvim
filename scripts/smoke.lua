@@ -3999,7 +3999,19 @@ vim.api.nvim_set_current_buf(thread.bufnr)
 buffers.apply_window_options(vim.api.nvim_get_current_win(), thread.bufnr)
 local extmarks =
   vim.api.nvim_buf_get_extmarks(thread.bufnr, require("coact.ui.render").namespace(), 0, -1, { details = true })
-assert(#extmarks > 0, "render should create extmarks")
+assert(#extmarks > 0, "render should create extmarks");
+(function()
+  local user_header_line = vim.api.nvim_buf_get_lines(thread.bufnr, 2, 3, false)[1] or ""
+  local saw_full_header_conceal = false
+  for _, mark in ipairs(extmarks) do
+    local details = mark[4] or {}
+    if mark[2] == 2 and details.priority == 2000 and details.conceal == "" then
+      saw_full_header_conceal = details.end_col == #user_header_line
+      break
+    end
+  end
+  assert(saw_full_header_conceal, "header overlays should conceal the full markdown heading line")
+end)()
 assert(#(thread.placeholder_marks or {}) >= 2, "reasoning and tool blocks should be placeholders")
 assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
 assert(thread.folds and thread.folds[1] and thread.folds[1].start == 3, "render should record user block folds")
