@@ -4061,8 +4061,24 @@ end
         delta = " world",
       },
     }, "assistant text delta should use stream fast path")
+    assert_handles_notification({
+      method = "item/agentMessage/delta",
+      params = {
+        threadId = "smoke-stream-fast-path",
+        turnId = "turn-fast",
+        itemId = "fast-assistant",
+        delta = "!",
+      },
+    }, "assistant text delta should coalesce stream fast path writes")
     local lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
-    assert(table.concat(lines, "\n"):match("hello world"), "assistant delta should update visible text immediately")
+    assert(not table.concat(lines, "\n"):match("hello world!"), "assistant delta should wait for the coalesced flush")
+    assert(
+      vim.wait(1000, function()
+        lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
+        return table.concat(lines, "\n"):match("hello world!") ~= nil
+      end, 5),
+      "assistant delta should update visible text on the coalesced flush"
+    )
     vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
       return false
     end, 5)
@@ -4078,8 +4094,13 @@ end
         delta = "\nnext line",
       },
     }, "assistant newline delta should use stream fast path")
-    lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
-    assert(table.concat(lines, "\n"):match("next line"), "assistant newline delta should update visible text")
+    assert(
+      vim.wait(1000, function()
+        lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
+        return table.concat(lines, "\n"):match("next line") ~= nil
+      end, 5),
+      "assistant newline delta should update visible text on the coalesced flush"
+    )
     assert(vim.api.nvim_buf_line_count(fast_thread.bufnr) == line_count + 1, "newline delta should append one line")
     vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
       return false

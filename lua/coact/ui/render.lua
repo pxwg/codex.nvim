@@ -12,8 +12,11 @@ local ns = vim.api.nvim_create_namespace("coact.nvim")
 local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
+local pending_stream_delta_timers = {}
+local pending_stream_deltas = {}
 local highlights_ready = false
 local highlights_autocmd_ready = false
+local stream_delta_flush_ms = 16
 
 local foldable_types = {
   UserBlock = true,
@@ -1800,6 +1803,59 @@ local function append_stream_block_delta(thread, range, delta)
   return true
 end
 
+local function stream_delta_key(thread, item_id)
+  return tostring(thread.id or "") .. "\0" .. tostring(item_id)
+end
+
+local function flush_stream_delta(key)
+  local pending = pending_stream_deltas[key]
+  pending_stream_deltas[key] = nil
+  pending_stream_delta_timers[key] = nil
+  if not pending or pending.delta == "" then
+    return
+  end
+  local thread = pending.thread
+  local item_id = pending.item_id
+  local range = thread and thread.stream_ranges_by_item_id and thread.stream_ranges_by_item_id[item_id]
+  if not tail_stream_range(thread, range) then
+    return
+  end
+  local item = thread.items and thread.items[item_id]
+  if not item or item.type ~= "agentMessage" then
+    return
+  end
+  range.block.text = item.text or ""
+  range.block.raw = item
+  range.block.state = item.status or item.phase or item.state or range.block.state
+  if range.auto_closed_line or pending.has_fence then
+    replace_stream_block_text(thread, range, item.text or "")
+  else
+    append_stream_block_delta(thread, range, pending.delta)
+  end
+end
+
+local function queue_stream_delta(thread, item_id, delta)
+  local key = stream_delta_key(thread, item_id)
+  local pending = pending_stream_deltas[key]
+  if not pending then
+    pending = {
+      thread = thread,
+      item_id = tostring(item_id),
+      delta = "",
+      has_fence = false,
+    }
+    pending_stream_deltas[key] = pending
+  end
+  delta = tostring(delta or "")
+  pending.delta = pending.delta .. delta
+  pending.has_fence = pending.has_fence or delta:find("```", 1, true) ~= nil or delta:find("~~~", 1, true) ~= nil
+  if not pending_stream_delta_timers[key] then
+    pending_stream_delta_timers[key] = vim.defer_fn(function()
+      flush_stream_delta(key)
+    end, stream_delta_flush_ms)
+  end
+end
+
 function M.try_stream_delta(thread, item_id, delta)
   delta = util.value(delta)
   if not thread or not item_id or delta == nil or delta == "" then
@@ -1817,13 +1873,8 @@ function M.try_stream_delta(thread, item_id, delta)
   if not item or item.type ~= "agentMessage" then
     return false
   end
-  range.block.text = item.text or ""
-  range.block.raw = item
-  range.block.state = item.status or item.phase or item.state or range.block.state
-  if range.auto_closed_line or delta:find("```", 1, true) or delta:find("~~~", 1, true) then
-    return replace_stream_block_text(thread, range, item.text or "")
-  end
-  return append_stream_block_delta(thread, range, tostring(delta))
+  queue_stream_delta(thread, item_id, delta)
+  return true
 end
 
 local function refresh_placeholder_block(thread, mark, item_id)
