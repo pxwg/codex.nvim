@@ -125,7 +125,16 @@ end
 local function prompt_winbar(thread)
   render.setup_highlights()
   local labels = {}
-  if not (composer_statusline.visible(thread) and composer_statusline.has_content(thread)) then
+  if
+    config.get().ui.layout == "sidebar"
+    and composer_statusline.visible(thread)
+    and composer_statusline.has_content(thread)
+  then
+    local text = composer_statusline.footer_text(thread, { role = "composer" })
+    if text ~= "" then
+      labels = { text }
+    end
+  elseif not (composer_statusline.visible(thread) and composer_statusline.has_content(thread)) then
     labels = metadata.composer_labels(thread)
     local ctx = metadata.context_label(thread)
     if ctx then
@@ -138,6 +147,25 @@ local function prompt_winbar(thread)
     statusline_escape(" Coact input "),
     "%#CoactHeaderMeta#",
     statusline_escape(meta),
+    "%*",
+  })
+end
+
+local function history_winbar(thread)
+  if
+    config.get().ui.layout ~= "sidebar"
+    or not (composer_statusline.visible(thread) and composer_statusline.has_content(thread))
+  then
+    return ""
+  end
+  render.setup_highlights()
+  local text = composer_statusline.footer_text(thread, { role = "history" })
+  if text == "" then
+    return ""
+  end
+  return table.concat({
+    "%#CoactStatusLineTitle#",
+    statusline_escape(" " .. text .. " "),
     "%*",
   })
 end
@@ -373,7 +401,7 @@ local function refresh_thread_layout(thread, opts)
     if thread.ui_state == "compose" then
       M.refresh_composer(thread)
     elseif valid_win(thread.winid) then
-      window.apply_history_layout(thread.winid)
+      window.apply_history_layout(thread.winid, thread)
     end
   end
   if valid_buf(thread.bufnr) then
@@ -418,7 +446,7 @@ local function setup_view_autocmds()
           thread.prompt_winid = nil
           thread.ui_state = "preview"
           if valid_win(thread.winid) then
-            window.apply_history_layout(thread.winid)
+            window.apply_history_layout(thread.winid, thread)
           end
         end
       end
@@ -484,7 +512,7 @@ local function open_history_help()
     "- `K`: open the block detail buffer",
     "- `g?`: show this help",
     "- `gs`: toggle status detail page",
-    "- `gS`: show/hide the history status card",
+    "- `gS`: show/hide the status chrome",
     "- `gt`: open Pi session tree when the Pi provider is active",
     "- `gT`: open Pi session tree at the message under cursor",
     "- `gc`: show current Coact runtime status",
@@ -705,6 +733,7 @@ function M.apply_window_options(win, bufnr)
     set_window_option(win, "winbar", prompt_winbar(thread))
   else
     set_window_option(win, "conceallevel", math.max(vim.wo[win].conceallevel, 1))
+    set_window_option(win, "winbar", history_winbar(thread))
   end
 end
 
@@ -1010,7 +1039,7 @@ function M.resize_prompt(thread)
   local min_height, max_height = composer_bounds()
   local height = clamp(prompt_visual_height(thread), min_height, max_height)
   thread.prompt_height = height
-  window.apply_thread_layout(thread.winid, winid, height + prompt_window_chrome_height(winid))
+  window.apply_thread_layout(thread.winid, winid, height + prompt_window_chrome_height(winid), thread)
   reveal_prompt_start_if_fits(winid, height)
 end
 
@@ -1044,6 +1073,28 @@ local function history_win_for_thread(thread)
   return nil
 end
 
+function M.refresh_chrome(thread)
+  thread = type(thread) == "table" and thread or state.get_thread(thread)
+  if not thread then
+    return
+  end
+  local history_winid = history_win_for_thread(thread)
+  if valid_win(history_winid) then
+    if config.get().ui.layout == "sidebar" then
+      M.apply_window_options(history_winid, thread.bufnr)
+    else
+      window.apply_status_chrome(history_winid, thread.prompt_winid, thread)
+    end
+  end
+  if valid_win(thread.prompt_winid) and current_window_buffer(thread.prompt_winid) == thread.prompt_bufnr then
+    if config.get().ui.layout == "sidebar" then
+      M.apply_window_options(thread.prompt_winid, thread.prompt_bufnr)
+    else
+      window.apply_status_chrome(history_winid, thread.prompt_winid, thread)
+    end
+  end
+end
+
 local function restore_prompt_cursor(thread)
   if not thread or not valid_win(thread.prompt_winid) or not valid_buf(thread.prompt_bufnr) then
     return
@@ -1071,7 +1122,7 @@ function M.enter_preview(thread_or_id, opts)
   end
   local history_winid = history_win_for_thread(thread)
   if valid_win(history_winid) then
-    window.apply_history_layout(history_winid)
+    window.apply_history_layout(history_winid, thread)
     M.apply_window_options(history_winid, thread.bufnr)
     if opts.focus ~= false then
       vim.api.nvim_set_current_win(history_winid)
@@ -1096,7 +1147,7 @@ function M.enter_compose(thread_or_id, opts)
   local thread = state.get_thread(thread_id)
   local history_winid = history_win_for_thread(thread)
   if not valid_win(history_winid) then
-    history_winid = window.open_history(bufnr)
+    history_winid = window.open_history(bufnr, thread)
     state.set_buffer(thread_id, bufnr, history_winid)
     M.apply_window_options(history_winid, bufnr)
     M.render(thread_id)
@@ -1108,7 +1159,7 @@ function M.enter_compose(thread_or_id, opts)
   if not (valid_win(prompt_winid) and current_window_buffer(prompt_winid) == prompt_bufnr) then
     local min_height = composer_bounds()
     local prompt_height = (thread.prompt_height or min_height) + prompt_window_chrome_height()
-    prompt_winid = window.open_composer(history_winid, prompt_bufnr, prompt_height)
+    prompt_winid = window.open_composer(history_winid, prompt_bufnr, prompt_height, thread)
     thread.prompt_winid = prompt_winid
   end
   M.apply_window_options(history_winid, bufnr)
@@ -1157,7 +1208,7 @@ function M.open(thread_id)
   local thread = state.get_thread(thread_id)
   local prompt_bufnr = M.ensure_prompt(thread_id)
   context.capture_thread_buffer(thread, vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
-  local winid = window.open_history(bufnr)
+  local winid = window.open_history(bufnr, thread)
   state.set_buffer(thread_id, bufnr, winid)
   thread.ui_state = "preview"
   thread.prompt_winid = nil

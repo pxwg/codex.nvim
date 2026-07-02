@@ -54,7 +54,7 @@ local commands = {
   { name = "review", detail = "Ask Codex to review the working tree", category = "workspace" },
   { name = "status", detail = "Display session configuration and token usage", category = "status" },
   { name = "debug-config", detail = "Print config layer and requirements diagnostics", category = "status" },
-  { name = "statusline", detail = "Show or hide the history status card", category = "ui" },
+  { name = "statusline", detail = "Show or hide the status chrome", category = "ui" },
   { name = "title", detail = "Configure CLI terminal title fields", category = "cli" },
   { name = "theme", detail = "Choose a syntax-highlighting theme", category = "ui" },
   { name = "settings", detail = "Open coact.nvim settings", category = "settings" },
@@ -105,7 +105,7 @@ local return_forms = {
   review = "notify(review/start)",
   status = "page(config/read + account/rateLimits/read + local thread status)",
   ["debug-config"] = "page(config/read + configRequirements/read)",
-  statusline = "action(local history status card) -> notify",
+  statusline = "action(local status chrome) -> notify",
   title = "notify(unsupported in coact.nvim)",
   theme = "notify(Neovim colorscheme-owned)",
   settings = "select(local settings menu)",
@@ -1682,7 +1682,7 @@ local handlers = {
     elseif actions.toggle_statusline then
       actions.toggle_statusline()
     else
-      return notify_result("history status card toggle is unavailable", vim.log.levels.WARN)
+      return notify_result("status chrome toggle is unavailable", vim.log.levels.WARN)
     end
   end,
   ["debug-config"] = function(args, actions)

@@ -230,6 +230,17 @@ local function has_provider_ui_content(thread)
   return false
 end
 
+local function has_settings_or_usage(thread)
+  local settings = setting_labels(thread)
+  if settings.model or settings.provider or settings.service_tier or settings.effort then
+    return true
+  end
+  if #token_usage_segments(thread) > 0 then
+    return true
+  end
+  return label(thread and thread.status_message) ~= nil
+end
+
 function M.visible(thread)
   local opts = composer_statusline_config()
   if opts.enabled == false then
@@ -248,7 +259,7 @@ function M.has_content(thread)
   if has_provider_ui_content(thread) then
     return true
   end
-  return is_pi_thread(thread)
+  return is_pi_thread(thread) or has_settings_or_usage(thread)
 end
 
 local function display_width(text)
@@ -536,6 +547,54 @@ local function token_usage_text(thread)
     end
   end
   return #values > 0 and table.concat(values, " ") or nil
+end
+
+function M.footer_chunks(thread, opts)
+  opts = opts or {}
+  if not M.visible(thread) or not M.has_content(thread) then
+    return {}
+  end
+  local settings = setting_labels(thread)
+  local segments = {}
+  if opts.role == "composer" then
+    add_segment(segments, nil, token_usage_text(thread))
+    add_segment(segments, "ctx", context_usage_text(thread), { value_hl = "CoactStatusLineContext" })
+    add_segment(segments, "state", thread_state_label(thread), { value_hl = "CoactStatusLineState" })
+    add_segment(segments, nil, thread and thread.status_message, { value_hl = "CoactStatusLineMessage" })
+  else
+    local provider_statuses = status_entries(provider_ui(thread))
+    local provider_model = nil
+    for _, entry in ipairs(provider_statuses) do
+      if entry.key == "model" then
+        provider_model = entry.text
+        break
+      end
+    end
+    add_segment(segments, nil, provider_title(thread), { value_hl = "CoactStatusLineTitle" })
+    add_segment(segments, "model", provider_model or settings.model)
+    add_segment(segments, "ctx", context_usage_text(thread), { value_hl = "CoactStatusLineContext" })
+    add_segment(segments, is_pi_thread(thread) and "thinking" or "effort", settings.effort)
+    for _, entry in ipairs(provider_statuses) do
+      if entry.key ~= "model" then
+        add_segment(segments, entry.key, entry.text, { value_hl = "CoactStatusLineMessage" })
+      end
+    end
+    add_segment(segments, "state", thread_state_label(thread), { value_hl = "CoactStatusLineState" })
+  end
+  local lines = segment_lines(segments, opts)
+  return lines[1] or {}
+end
+
+function M.chunks_text(chunks)
+  local parts = {}
+  for _, chunk in ipairs(chunks or {}) do
+    table.insert(parts, tostring(chunk[1] or ""))
+  end
+  return table.concat(parts)
+end
+
+function M.footer_text(thread, opts)
+  return M.chunks_text(M.footer_chunks(thread, opts))
 end
 
 local function history_items(thread)

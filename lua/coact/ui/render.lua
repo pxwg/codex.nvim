@@ -3,7 +3,6 @@ local events = require("coact.events")
 local activity_summary = require("coact.ui.activity_summary")
 local metadata = require("coact.ui.metadata")
 local providers = require("coact.providers")
-local statusline = require("coact.ui.statusline")
 local tool_renderers = require("coact.ui.tool_renderers")
 local util = require("coact.util")
 
@@ -317,13 +316,6 @@ end
 
 local function mark_spinner(thread, line)
   thread.spinner_mark = { line = line }
-end
-
-local function mark_statusline_chunks(thread, line, chunks)
-  table.insert(thread.statusline_marks, {
-    line = line,
-    chunks = chunks or {},
-  })
 end
 
 local function block_key(block, opts)
@@ -649,26 +641,6 @@ local function apply_stream_decoration_marks(thread, bufnr)
         priority = 1100,
         strict = false,
       })
-    end
-  end
-end
-
-local function apply_statusline_marks(thread, bufnr)
-  for _, mark in ipairs(thread.statusline_marks or {}) do
-    local col = 0
-    for _, chunk in ipairs(mark.chunks or {}) do
-      local text = tostring(chunk[1] or "")
-      local hl_group = chunk[2]
-      if text ~= "" and hl_group then
-        vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, col, {
-          end_col = col + #text,
-          hl_group = hl_group,
-          hl_mode = "combine",
-          priority = 1000,
-          strict = false,
-        })
-      end
-      col = col + #text
     end
   end
 end
@@ -1642,27 +1614,6 @@ local function render_assistant_group(thread, lines, blocks, index)
   return index
 end
 
-local function chunks_text(chunks)
-  local parts = {}
-  for _, chunk in ipairs(chunks or {}) do
-    table.insert(parts, tostring(chunk[1] or ""))
-  end
-  return table.concat(parts)
-end
-
-local function render_history_statusline(thread, lines, bufnr)
-  local width = narrowest_buffer_text_width(bufnr)
-  local status_lines = statusline.history_lines(thread, { width = width })
-  if #status_lines == 0 then
-    return
-  end
-  for _, chunks in ipairs(status_lines) do
-    local line = add(lines, chunks_text(chunks))
-    mark_statusline_chunks(thread, line, chunks)
-  end
-  add(lines, "")
-end
-
 function M.render(thread)
   if not thread or not thread.bufnr or not vim.api.nvim_buf_is_valid(thread.bufnr) then
     return
@@ -1682,7 +1633,6 @@ function M.render(thread)
   thread.auto_closed_fence_lines = {}
   thread.reasoning_marks = {}
   thread.stream_decoration_marks = {}
-  thread.statusline_marks = {}
   thread.spinner_mark = nil
   thread.folds = {}
   thread.fold_levels = {}
@@ -1712,8 +1662,6 @@ function M.render(thread)
     add(lines, "")
   end
 
-  render_history_statusline(thread, lines, bufnr)
-
   build_fold_levels(thread)
 
   vim.bo[bufnr].modifiable = true
@@ -1724,7 +1672,6 @@ function M.render(thread)
   apply_placeholder_marks(thread, bufnr)
   apply_reasoning_marks(thread, bufnr)
   apply_stream_decoration_marks(thread, bufnr)
-  apply_statusline_marks(thread, bufnr)
   apply_spinner_marks(thread, bufnr)
   apply_composer_token_marks(thread, bufnr)
   vim.bo[bufnr].modifiable = false
@@ -1739,7 +1686,9 @@ function M.render(thread)
 
   apply_window_views(thread, bufnr, snapshots)
   prune_view_states(thread, bufnr)
-  require("coact.buffers").refresh_composer(thread)
+  local buffers = require("coact.buffers")
+  buffers.refresh_composer(thread)
+  buffers.refresh_chrome(thread)
   if thread_busy(thread) then
     schedule_spinner_tick(thread)
   end

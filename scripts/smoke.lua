@@ -930,17 +930,31 @@ do
       vim.inspect(pi_widget_lines):match("step 1"),
       "Pi below-editor widgets should remain available to statusline helpers"
     )
+    local function footer_text(winid)
+      local footer = vim.api.nvim_win_get_config(winid).footer
+      if type(footer) == "table" then
+        local parts = {}
+        for _, chunk in ipairs(footer) do
+          table.insert(parts, type(chunk) == "table" and tostring(chunk[1] or "") or tostring(chunk or ""))
+        end
+        return table.concat(parts)
+      end
+      return tostring(footer or "")
+    end
+    local pi_status_footer = pi_statusline.footer_text(pi_state_thread, { role = "history", width = 80 })
+    assert(
+      pi_status_footer:find("Pi", 1, true)
+        and pi_status_footer:find("model", 1, true)
+        and pi_status_footer:find("82.5%/272k (auto)", 1, true),
+      "Pi status footer should expose provider, model, and context usage: " .. vim.inspect(pi_status_footer)
+    )
     local pi_buffers = require("coact.buffers")
     local pi_history_buf = pi_buffers.ensure("pi:smoke-session")
     pi_buffers.render("pi:smoke-session")
     local pi_history_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
     assert(
-      pi_history_text:find("╭─ Pi status", 1, true)
-        and pi_history_text:find("🤖 gpt-4o", 1, true)
-        and pi_history_text:find("82.5%/272k (auto)", 1, true)
-        and pi_history_text:find("g? help", 1, true)
-        and pi_history_text:find("gS hide status", 1, true),
-      "Pi composer statusline should also render context usage in a hinted status card"
+      not pi_history_text:find("Pi status", 1, true) and not pi_history_text:find("gS hide status", 1, true),
+      "Pi status chrome should not be rendered as transcript buffer lines"
     )
     local opened_pi_history_buf, opened_pi_history_win = pi_buffers.open("pi:smoke-session")
     assert(type(vim.fn.maparg("g?", "n", false, true).callback) == "function", "history should bind g? help")
@@ -961,19 +975,13 @@ do
       "history should bind g[ previous message"
     )
     local opened_pi_history_width = vim.api.nvim_win_get_width(opened_pi_history_win)
-    local opened_pi_history_lines = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
-    local saw_opened_status = false
-    for _, line in ipairs(opened_pi_history_lines) do
-      if line:find("Pi status", 1, true) then
-        saw_opened_status = true
-      end
-      if saw_opened_status then
-        assert(
-          vim.fn.strdisplaywidth(line) <= opened_pi_history_width,
-          "opening history should re-render status card to the actual window width"
-        )
-      end
-    end
+    local opened_footer = footer_text(opened_pi_history_win)
+    assert(
+      opened_footer:find("🤖 gpt-4o", 1, true)
+        and opened_footer:find("82.5%/272k (auto)", 1, true)
+        and vim.fn.strdisplaywidth(opened_footer) <= opened_pi_history_width,
+      "opening history should render status in the window footer at the actual width"
+    )
     local narrow_history_width = 24
     local win_config = vim.api.nvim_win_get_config(opened_pi_history_win)
     if win_config.relative and win_config.relative ~= "" then
@@ -984,31 +992,14 @@ do
     end
     pcall(vim.api.nvim_exec_autocmds, "WinResized", {})
     vim.wait(1000, function()
-      local lines_after_resize = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
-      local saw_status_after_resize = false
-      for _, line in ipairs(lines_after_resize) do
-        if line:find("Pi status", 1, true) then
-          saw_status_after_resize = true
-        end
-        if saw_status_after_resize and vim.fn.strdisplaywidth(line) > narrow_history_width then
-          return false
-        end
-      end
-      return saw_status_after_resize
+      local resized_footer = footer_text(opened_pi_history_win)
+      return resized_footer:find("Pi", 1, true) ~= nil
+        and vim.fn.strdisplaywidth(resized_footer) <= narrow_history_width
     end, 20)
-    local resized_pi_history_lines = vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)
-    local saw_resized_status = false
-    for _, line in ipairs(resized_pi_history_lines) do
-      if line:find("Pi status", 1, true) then
-        saw_resized_status = true
-      end
-      if saw_resized_status then
-        assert(
-          vim.fn.strdisplaywidth(line) <= narrow_history_width,
-          "WinResized should immediately re-render the status card to the new window width"
-        )
-      end
-    end
+    assert(
+      vim.fn.strdisplaywidth(footer_text(opened_pi_history_win)) <= narrow_history_width,
+      "WinResized should immediately re-render the status footer to the new window width"
+    )
     pcall(vim.api.nvim_win_close, opened_pi_history_win, true)
     local status_detail_buf, status_detail_win = pi_statusline.toggle_detail(pi_state_thread)
     assert(
@@ -1040,14 +1031,14 @@ do
     end
     assert(not saw_status_virt_lines, "composer prompt marks should not render statusline virtual lines")
     require("coact").set_statusline_visible(false, "pi:smoke-session")
-    assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide the history status card")
+    assert(not pi_statusline.visible(pi_state_thread), "Coact statusline command should hide status chrome")
     _G.__coact_smoke_hidden_status_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
     assert(
       not _G.__coact_smoke_hidden_status_text:find("Pi status", 1, true),
-      "Coact statusline command should hide the history status card"
+      "Coact statusline command should keep status chrome out of the transcript buffer"
     )
     require("coact").set_statusline_visible(true, "pi:smoke-session")
-    assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show the history status card")
+    assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show status chrome")
   end)()
   local pi_cwd = require("coact.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")

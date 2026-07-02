@@ -336,11 +336,11 @@ local function remember_session_stats(stats, thread_id)
     end
     local buffers_ok, buffers = pcall(require, "coact.buffers")
     if buffers_ok then
-      if buffers.schedule_render then
-        buffers.schedule_render(thread.id)
-      end
       if buffers.refresh_composer then
         buffers.refresh_composer(thread)
+      end
+      if buffers.refresh_chrome then
+        buffers.refresh_chrome(thread)
       end
     end
   end
@@ -1882,11 +1882,11 @@ local function refresh_provider_ui(thread)
   end
   local ok, buffers = pcall(require, "coact.buffers")
   if ok then
-    if buffers.schedule_render then
-      buffers.schedule_render(thread.id)
-    end
     if buffers.refresh_composer then
       buffers.refresh_composer(thread)
+    end
+    if buffers.refresh_chrome then
+      buffers.refresh_chrome(thread)
     end
   end
 end
