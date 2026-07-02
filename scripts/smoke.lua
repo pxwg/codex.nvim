@@ -4005,6 +4005,7 @@ assert(thread.spinner_mark ~= nil, "busy thread should render a spinner mark")
 assert(thread.folds and thread.folds[1] and thread.folds[1].start == 3, "render should record user block folds")
 assert(vim.wo.foldmethod == "manual", "history windows should use manual folds")
 assert(vim.fn.foldlevel(3) == 1, "render should create manual folds for user blocks")
+assert(vim.fn.foldclosed(3) == -1, "manual folds should remain open after render")
 local detail_lines = require("coact.ui.detail").lines_for(thread.placeholder_marks[1].block)
 assert(table.concat(detail_lines, "\n"):match("# Reasoning"), "detail should render block title")
 

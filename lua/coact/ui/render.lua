@@ -1312,6 +1312,7 @@ local function apply_manual_folds(thread, bufnr)
             end
           end
         end
+        vim.cmd("silent! normal! zR")
         vim.fn.winrestview(view)
       end)
     end
