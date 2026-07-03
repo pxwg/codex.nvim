@@ -463,7 +463,7 @@ local function model_id(model)
     return nil
   end
   local provider = util.value(model.provider)
-  local id = util.value(model.id) or util.value(model.model)
+  local id = util.value(model.modelId) or util.value(model.model_id) or util.value(model.id) or util.value(model.model)
   if provider and id and not tostring(id):find("/", 1, true) then
     return tostring(provider) .. "/" .. tostring(id)
   end

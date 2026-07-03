@@ -1172,7 +1172,18 @@ do
   vim.fn.mkdir(pi_session_dir, "p")
   local pi_old_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-16-54-901Z_pi-old.jsonl")
   local pi_new_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-47-53-744Z_pi-new.jsonl")
-  local function write_pi_session(path, id, created, prompt, name, model_id)
+  local function write_pi_session(path, id, created, prompt, name, model_id, top_level_model)
+    local model_change = top_level_model
+        and {
+          type = "model_change",
+          id = "event-" .. id,
+          provider = "openai",
+          modelId = model_id,
+        }
+      or {
+        type = "model_change",
+        model = { provider = "openai", id = model_id },
+      }
     vim.fn.writefile({
       vim.json.encode({
         type = "session",
@@ -1181,10 +1192,7 @@ do
         timestamp = created,
         cwd = pi_cwd,
       }),
-      vim.json.encode({
-        type = "model_change",
-        model = { provider = "openai", id = model_id },
-      }),
+      vim.json.encode(model_change),
       vim.json.encode({
         type = "thinking_level_change",
         level = "high",
@@ -1209,7 +1217,7 @@ do
     }, path)
   end
   write_pi_session(pi_old_session_file, "pi-old", "2026-06-15T16:16:54.901Z", "old pi prompt", "Old Pi", "gpt-4o")
-  write_pi_session(pi_new_session_file, "pi-new", "2026-06-15T16:47:53.744Z", "new pi prompt", "New Pi", "gpt-5")
+  write_pi_session(pi_new_session_file, "pi-new", "2026-06-15T16:47:53.744Z", "new pi prompt", "New Pi", "gpt-5", true)
   local resolved_pi_session_dir, pi_filters_by_cwd = pi_provider._session_dir_for_cwd(pi_cwd)
   assert(resolved_pi_session_dir == pi_session_dir, "Pi provider should use configured session_dir for history")
   assert(pi_filters_by_cwd == true, "custom Pi session_dir should filter sessions by cwd")
@@ -3552,7 +3560,11 @@ assert(execute_default_new_text == "", "accepting slash completion should remove
 assert(executed_slash == "/model", "accepting slash completion should execute the slash command")
 assert(execute_done, "slash completion execute should call blink callback")
 
-assert(require("coact.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL }):match("%[untitled%]"))
+do
+  local untitled_label = require("coact.pickers")._label({ id = "thread-1", name = vim.NIL, preview = vim.NIL })
+  assert(untitled_label:match("%[untitled%]"), "thread picker label should fall back to untitled")
+  assert(not untitled_label:match("thread%-1"), "thread picker selection label should not expose raw ids")
+end
 do
   local pickers = require("coact.pickers")
   local original_snacks = package.loaded["snacks"]
@@ -3571,6 +3583,8 @@ do
         modelProvider = "openai",
         sessionFile = "/tmp/pi-picker/session.jsonl",
         preview = "first picker prompt",
+        messageCount = 3,
+        updated_at = "2026-07-03T11:14:38Z",
       },
     })
   end
@@ -3593,11 +3607,31 @@ do
   assert(picked_opts and picked_opts.title == "Pi Threads", "thread picker title should use the active provider")
   assert(picked_opts.preview == "preview", "thread picker should use item preview data for Snacks")
   assert(
+    picked_opts.items[1] and picked_opts.items[1].text and not picked_opts.items[1].text:match("pi:picker%-session"),
+    "thread picker selection text should hide raw provider ids"
+  )
+  local formatted = picked_opts.format(picked_opts.items[1])
+  local formatted_text = table.concat(
+    vim.tbl_map(function(chunk)
+      return chunk[1] or ""
+    end, formatted),
+    ""
+  )
+  assert(
+    formatted_text:match("Picker Pi")
+      and formatted_text:match("first picker prompt")
+      and formatted_text:match("3 msgs")
+      and not formatted_text:match("pi:picker%-session"),
+    "thread picker should render modern summary rows without raw ids"
+  )
+  assert(formatted[2] and formatted[2][2] == "CoactPickerTitle", "thread picker rows should carry Coact highlights")
+  assert(
     picked_opts.items[1]
       and picked_opts.items[1].preview
-      and picked_opts.items[1].preview.text:match("session: /tmp/pi%-picker/session%.jsonl")
+      and picked_opts.items[1].preview.ft == "markdown"
+      and picked_opts.items[1].preview.text:match("%*%*Session%*%* `/tmp/pi%-picker/session%.jsonl`")
       and picked_opts.items[1].preview.text:match("first picker prompt"),
-    "thread picker items should expose textual previews instead of requiring a file"
+    "thread picker items should expose styled textual previews instead of requiring a file"
   )
   assert(resumed_thread_id == "pi:picker-session", "thread picker should resume the selected provider thread")
 end
