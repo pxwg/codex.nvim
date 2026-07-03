@@ -142,20 +142,22 @@ context_handlers.cursor = function()
   local start_line = math.max(1, cursor[1] - 20)
   local end_line = math.min(vim.api.nvim_buf_line_count(bufnr), cursor[1] + 20)
   local lines = vim.api.nvim_buf_get_lines(bufnr, start_line - 1, end_line, false)
+  local fenced = { "```" .. vim.bo[bufnr].filetype }
+  for offset, line in ipairs(lines) do
+    local lnum = start_line + offset - 1
+    table.insert(fenced, ("%s%5d  %s"):format(lnum == cursor[1] and ">" or " ", lnum, line))
+  end
+  table.insert(fenced, "```")
+
   local out = {
     "Neovim context: cursor",
     ("- buffer: %s"):format(context.buffer_label(bufnr)),
     ("- cursor: L%d:C%d"):format(cursor[1], cursor[2] + 1),
     ("- range: L%d-L%d"):format(start_line, end_line),
     "",
-    "```" .. vim.bo[bufnr].filetype,
   }
-  for offset, line in ipairs(lines) do
-    local lnum = start_line + offset - 1
-    table.insert(out, ("%s%5d  %s"):format(lnum == cursor[1] and ">" or " ", lnum, line))
-  end
-  table.insert(out, "```")
-  return table.concat(out, "\n")
+  vim.list_extend(out, fenced)
+  return context_payload(table.concat(out, "\n"), table.concat(fenced, "\n"))
 end
 
 context_handlers.diagnostics = function()
@@ -317,6 +319,7 @@ local function normalize_context_result(value)
     end
     return {
       inputs = inputs,
+      prompt = value.prompt,
       documentation = value.documentation,
     }
   end
@@ -325,7 +328,10 @@ local function normalize_context_result(value)
   if not inputs then
     return nil
   end
-  return { inputs = inputs }
+  return {
+    inputs = inputs,
+    prompt = type(value) == "string" and value or nil,
+  }
 end
 
 local function resolve_context_payload(token, opts)

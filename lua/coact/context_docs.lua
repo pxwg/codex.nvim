@@ -43,12 +43,11 @@ function M.documentation_for_token(token, opts)
     return payload.documentation
   end
 
-  local lines = {
-    "Context preview for " .. token,
-    "",
-    "This is what coact.nvim will inject when this token is submitted:",
-    "",
-  }
+  if type(payload.prompt) == "string" and payload.prompt ~= "" then
+    return payload.prompt
+  end
+
+  local lines = {}
   for index, input in ipairs(payload.inputs) do
     if index > 1 then
       table.insert(lines, "")

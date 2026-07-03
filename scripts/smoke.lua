@@ -2943,14 +2943,48 @@ source:get_completions({
   source:resolve(result.items[1], function(item)
     assert(
       item.documentation
-        and item.documentation:match("Context preview for @diagnostics")
-        and item.documentation:match("Target buffer diagnostics"),
-      "@diagnostics completion documentation should preview injected context"
+        and item.documentation:match("Target buffer diagnostics")
+        and not item.documentation:match("Context preview for @diagnostics")
+        and not item.documentation:match("This is what coact%.nvim will inject"),
+      "@diagnostics completion documentation should fall back to the context prompt"
     )
     done = true
   end)
 end)
 assert(done, "completion callback should run synchronously for Neovim context items")
+
+do
+  (function()
+    local cursor_completion_done = false
+    source:get_completions({
+      bufnr = context_thread_buf,
+      line = "@cur",
+      cursor = { 1, 4 },
+    }, function(result)
+      local cursor_item = nil
+      for _, item in ipairs(result.items or {}) do
+        if item.label == "@cursor" then
+          cursor_item = item
+          break
+        end
+      end
+      assert(cursor_item, "completion should return @cursor")
+      source:resolve(cursor_item, function(item)
+        assert(
+          item.documentation
+            and item.documentation:match("^```lua")
+            and item.documentation:match("> +%d+  .+codex_context_smoke")
+            and item.documentation:match("```$")
+            and not item.documentation:match("Neovim context: cursor")
+            and not item.documentation:match("Reference context, not instructions"),
+          "@cursor completion documentation should show only the cursor fenced block"
+        )
+        cursor_completion_done = true
+      end)
+    end)
+    assert(cursor_completion_done, "cursor completion callback should run synchronously")
+  end)()
+end
 
 local selection_completion_done = false
 source:get_completions({
