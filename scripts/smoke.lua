@@ -950,6 +950,17 @@ do
     )
     local pi_buffers = require("coact.buffers")
     local pi_history_buf = pi_buffers.ensure("pi:smoke-session")
+    state.upsert_item("pi:smoke-session", "pi-double-esc-turn", {
+      id = "pi-double-esc-user",
+      type = "userMessage",
+      content = {
+        {
+          type = "text",
+          text = "double escape tree prompt",
+        },
+      },
+      treeEntryId = "entry-double-esc",
+    })
     pi_buffers.render("pi:smoke-session")
     local pi_history_text = table.concat(vim.api.nvim_buf_get_lines(pi_history_buf, 0, -1, false), "\n")
     assert(
@@ -965,6 +976,10 @@ do
       type(vim.fn.maparg("gT", "n", false, true).callback) == "function",
       "history should bind gT Pi tree at message"
     )
+    assert(
+      type(vim.fn.maparg("<Esc><Esc>", "n", false, true).callback) == "function",
+      "history should bind double escape Pi tree"
+    )
     assert(type(vim.fn.maparg("gc", "n", false, true).callback) == "function", "history should bind gc status")
     assert(type(vim.fn.maparg("gy", "n", false, true).callback) == "function", "history should bind gy copy")
     assert(type(vim.fn.maparg("gd", "n", false, true).callback) == "function", "history should bind gd diff")
@@ -974,6 +989,40 @@ do
       type(vim.fn.maparg("g[", "n", false, true).callback) == "function",
       "history should bind g[ previous message"
     )
+    local double_esc_row = nil
+    for row, line in ipairs(vim.api.nvim_buf_get_lines(opened_pi_history_buf, 0, -1, false)) do
+      if line:find("double escape tree prompt", 1, true) then
+        double_esc_row = row
+        break
+      end
+    end
+    assert(double_esc_row, "history should render a message with a Pi tree entry id for double escape smoke")
+    local original_submit_text = require("coact").submit_text
+    local double_esc_submit = nil
+    require("coact").submit_text = function(text, thread_id)
+      double_esc_submit = { text = text, thread_id = thread_id }
+    end
+    vim.api.nvim_set_current_win(opened_pi_history_win)
+    vim.api.nvim_win_set_cursor(opened_pi_history_win, { double_esc_row, 0 })
+    vim.fn.maparg("<Esc><Esc>", "n", false, true).callback()
+    assert(
+      double_esc_submit
+        and double_esc_submit.text == "/tree entry-double-esc"
+        and double_esc_submit.thread_id == "pi:smoke-session",
+      "history double escape should open the Pi tree at the message under cursor"
+    )
+    pi_buffers.enter_compose("pi:smoke-session", { startinsert = false })
+    vim.api.nvim_set_current_win(pi_state_thread.prompt_winid)
+    double_esc_submit = nil
+    local prompt_double_esc = vim.fn.maparg("<Esc><Esc>", "n", false, true).callback
+    assert(type(prompt_double_esc) == "function", "composer should bind double escape Pi tree")
+    prompt_double_esc()
+    assert(
+      double_esc_submit and double_esc_submit.text == "/tree" and double_esc_submit.thread_id == "pi:smoke-session",
+      "composer double escape should open the Pi tree without an initial selection"
+    )
+    require("coact").submit_text = original_submit_text
+    pi_buffers.enter_preview(pi_state_thread, { focus = true })
     local opened_pi_history_width = vim.api.nvim_win_get_width(opened_pi_history_win)
     local opened_footer = footer_text(opened_pi_history_win)
     assert(

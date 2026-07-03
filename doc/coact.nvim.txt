@@ -469,6 +469,9 @@ Thread/composer buffer keys:
   i/a/...   open composer from history preview
   za        expand/collapse placeholder block
   K         open full block detail
+  <Esc><Esc>
+            with Pi, open the session tree; history preselects the current
+            message when it has a tree entry id, composer opens the plain tree
   q         close composer in compose state, close UI from history
 <
 

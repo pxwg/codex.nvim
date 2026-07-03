@@ -515,6 +515,7 @@ local function open_history_help()
     "- `gS`: show/hide the status chrome",
     "- `gt`: open Pi session tree when the Pi provider is active",
     "- `gT`: open Pi session tree at the message under cursor",
+    "- `<Esc><Esc>`: open Pi session tree, preselected at the message under cursor when available",
     "- `gc`: show current Coact runtime status",
     "- `gy`: copy latest assistant output",
     "- `gd`: show workspace diff",
@@ -601,6 +602,15 @@ local function block_tree_entry_id(thread, block)
   return nil
 end
 
+local function cursor_tree_context(thread)
+  local block, err = require("coact.ui.detail").block_under_cursor()
+  if not block then
+    return nil, err, false
+  end
+  local supported_block = block.type == "UserBlock" or block.type == "AssistantBlock"
+  return block_tree_entry_id(thread, block), nil, supported_block
+end
+
 local function open_tree_at_cursor(bufnr)
   local thread = state.thread_for_buf(bufnr)
   if not thread then
@@ -610,12 +620,10 @@ local function open_tree_at_cursor(bufnr)
   if not (ok and providers.is("pi")) then
     return util.notify("Tree rollback from a message is only available with the Pi provider", vim.log.levels.WARN)
   end
-  local block, err = require("coact.ui.detail").block_under_cursor()
-  if not block then
+  local tree_entry_id, err, supported_block = cursor_tree_context(thread)
+  if err then
     return util.notify(err or "No Coact block under cursor", vim.log.levels.WARN)
   end
-  local supported_block = block.type == "UserBlock" or block.type == "AssistantBlock"
-  local tree_entry_id = block_tree_entry_id(thread, block)
   if not tree_entry_id and not supported_block then
     return util.notify("Pi tree rollback is only supported for user and assistant messages", vim.log.levels.WARN)
   end
@@ -628,6 +636,28 @@ local function open_tree_at_cursor(bufnr)
   slash_action(thread.id, "/tree " .. tree_entry_id)
 end
 
+local function open_tree_from_current_context(bufnr)
+  local thread = state.thread_for_buf(bufnr)
+  if not thread then
+    return
+  end
+  local ok, providers = pcall(require, "coact.providers")
+  if not (ok and providers.is("pi")) then
+    return
+  end
+  local tree_entry_id = nil
+  if not M.is_prompt_buffer(bufnr) then
+    tree_entry_id = cursor_tree_context(thread)
+  end
+  slash_action(thread.id, tree_entry_id and ("/tree " .. tree_entry_id) or "/tree")
+end
+
+local function double_escape_tree_keymap(bufnr)
+  vim.keymap.set("n", "<Esc><Esc>", function()
+    open_tree_from_current_context(bufnr)
+  end, { buffer = bufnr, silent = true, desc = "Open Pi session tree from Coact context" })
+end
+
 local function configure_history_buffer(bufnr, thread_id)
   vim.bo[bufnr].buftype = "nofile"
   vim.bo[bufnr].bufhidden = "hide"
@@ -638,6 +668,7 @@ local function configure_history_buffer(bufnr, thread_id)
   vim.b[bufnr].coact_role = "history"
   submit_keymap(bufnr)
   history_insert_intent_keymaps(bufnr)
+  double_escape_tree_keymap(bufnr)
   vim.keymap.set("n", "q", function()
     close_thread_windows(state.thread_for_buf(bufnr), vim.api.nvim_get_current_win())
   end, { buffer = bufnr, desc = "Close Coact windows" })
@@ -698,6 +729,7 @@ local function configure_prompt_buffer(bufnr, thread_id)
   vim.b[bufnr].coact_role = "composer"
   submit_keymap(bufnr)
   context_tab_keymap(bufnr)
+  double_escape_tree_keymap(bufnr)
   vim.keymap.set("n", "q", function()
     M.enter_preview(vim.b[bufnr].coact_thread_id, { source = "composer_q", focus = true })
   end, { buffer = bufnr, desc = "Close Coact input" })
