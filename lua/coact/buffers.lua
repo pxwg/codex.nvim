@@ -516,6 +516,7 @@ local function open_history_help()
     "- `gt`: open Pi session tree when the Pi provider is active",
     "- `gT`: open Pi session tree at the message under cursor",
     "- `<Esc><Esc>`: open Pi session tree, preselected at the message under cursor when available",
+    "- `r` in the Pi tree: reveal a selected entry in the current transcript when possible",
     "- `gc`: show current Coact runtime status",
     "- `gy`: copy latest assistant output",
     "- `gd`: show workspace diff",
@@ -1109,6 +1110,103 @@ local function history_win_for_thread(thread)
     end
   end
   return nil
+end
+
+local function item_tree_entry_id(item)
+  local id = util.value(item and (item.treeEntryId or item.tree_entry_id))
+  return id ~= nil and tostring(id) or nil
+end
+
+local function thread_contains_tree_entry(thread, tree_entry_id)
+  if not (thread and tree_entry_id and thread.items) then
+    return false
+  end
+  local wanted = tostring(tree_entry_id)
+  for _, item_id in ipairs(thread.item_order or {}) do
+    if item_tree_entry_id(thread.items[item_id]) == wanted then
+      return true
+    end
+  end
+  for _, item in pairs(thread.items or {}) do
+    if item_tree_entry_id(item) == wanted then
+      return true
+    end
+  end
+  return false
+end
+
+local function rendered_tree_entry_line(thread, tree_entry_id)
+  local wanted = tree_entry_id and tostring(tree_entry_id) or nil
+  if not (thread and wanted) then
+    return nil
+  end
+  for _, mark in ipairs(thread.header_marks or {}) do
+    if block_tree_entry_id(thread, mark.block) == wanted then
+      return mark.line
+    end
+  end
+  local best = nil
+  for line, block in pairs(thread.render_index or {}) do
+    if block_tree_entry_id(thread, block) == wanted then
+      local lnum = tonumber(line)
+      if lnum and (not best or lnum < best) then
+        best = lnum
+      end
+    end
+  end
+  return best
+end
+
+function M.reveal_tree_entry(thread_id, tree_entry_id, opts)
+  opts = opts or {}
+  local id = util.value(tree_entry_id)
+  if id == nil or tostring(id) == "" then
+    return false, "missing tree entry id"
+  end
+  id = tostring(id)
+  local thread = state.get_thread(thread_id)
+  if not thread then
+    return false, "thread not found"
+  end
+  if not thread_contains_tree_entry(thread, id) then
+    return false, "tree entry is not in the current rendered branch"
+  end
+
+  local bufnr = M.ensure(thread.id)
+  if not valid_buf(bufnr) then
+    return false, "history buffer is not available"
+  end
+  thread = state.get_thread(thread.id)
+  M.render(thread.id)
+
+  local line = rendered_tree_entry_line(thread, id)
+  if not line then
+    return false, "tree entry is not rendered in the current transcript"
+  end
+
+  local winid = history_win_for_thread(thread)
+  if not valid_win(winid) then
+    local _, opened_winid = M.open(thread.id)
+    winid = opened_winid
+    thread = state.get_thread(thread.id)
+    line = rendered_tree_entry_line(thread, id) or line
+  end
+  if not valid_win(winid) then
+    return false, "history window is not available"
+  end
+
+  M.apply_window_options(winid, bufnr)
+  if opts.focus ~= false then
+    vim.api.nvim_set_current_win(winid)
+  end
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  line = clamp(line, 1, line_count)
+  pcall(vim.api.nvim_win_set_cursor, winid, { line, 0 })
+  pcall(vim.api.nvim_win_call, winid, function()
+    vim.cmd("normal! zz")
+  end)
+  render.on_user_view_changed(thread, winid, "cursor")
+  return true
 end
 
 function M.refresh_chrome(thread)

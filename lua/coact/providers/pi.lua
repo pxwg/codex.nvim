@@ -41,7 +41,7 @@ local M = {
       reasoning = "select(Pi thinking level) -> notify(set_thinking_level)",
       skills = "select(get_commands source=skill) -> insert($skill:<name>)",
       status = "page(get_state + get_session_stats + local thread status)",
-      tree = "select(Pi session tree) -> notify(thread/tree) -> refresh thread",
+      tree = "select(Pi session tree) -> reveal locally or notify(thread/tree) -> refresh thread",
     },
   },
 }
@@ -58,6 +58,7 @@ local runtime = {
   turn_seq = 0,
   provider_ui = nil,
   branch_snapshot = nil,
+  last_tree_action = nil,
   queued_turns = {},
   tool_output = {},
   tool_args = {},
@@ -624,6 +625,30 @@ local function normalize_branch_snapshot(payload)
   }
 end
 
+local function normalize_tree_action(payload)
+  if type(payload) ~= "table" then
+    return nil
+  end
+  local nested = payload.treeAction or payload.tree_action
+  if type(nested) == "table" then
+    return normalize_tree_action(nested)
+  end
+  if payload.__coactNvimPiTreeAction ~= true then
+    return nil
+  end
+  local action = util.value(payload.action)
+  if action ~= "reveal" and action ~= "navigateTree" and action ~= "cancel" and action ~= "noop" then
+    return nil
+  end
+  local id = util.value(payload.id or payload.entryId or payload.entry_id)
+  return {
+    __coactNvimPiTreeAction = true,
+    action = action,
+    id = id ~= nil and tostring(id) or nil,
+    fallbackReason = util.value(payload.fallbackReason or payload.fallback_reason),
+  }
+end
+
 local function compact_snapshot_text(value)
   return util.trim(tostring(value or ""):gsub("%s+", " "))
 end
@@ -1180,13 +1205,23 @@ function M.custom_request(rpc, method, params, callback)
 
   if method == "thread/tree" then
     runtime.current_thread_id = params.threadId or current_thread_id()
+    runtime.last_tree_action = nil
     rpc._request_message("prompt", { message = tree_command_message(params) }, function(err, result)
+      local tree_action = normalize_tree_action(result) or normalize_tree_action(runtime.last_tree_action)
+      runtime.last_tree_action = nil
       if err then
         callback(err, nil)
         return
       end
       if result and result.cancelled then
         callback({ message = "Pi tree navigation was cancelled" }, nil)
+        return
+      end
+      if
+        tree_action
+        and (tree_action.action == "reveal" or tree_action.action == "cancel" or tree_action.action == "noop")
+      then
+        callback(nil, { treeAction = tree_action })
         return
       end
       read_current_thread(rpc, params, callback, { replace_turns = true })
@@ -1980,12 +2015,17 @@ function M.handle_raw_message(message, rpc)
     if ok and pi_tree.is_request(message) then
       vim.schedule(function()
         pi_tree.select(message, function(choice)
+          local tree_action = normalize_tree_action(choice)
           if choice == nil then
+            runtime.last_tree_action = { __coactNvimPiTreeAction = true, action = "cancel" }
             extension_response(rpc, message, { cancelled = true })
           else
+            if tree_action then
+              runtime.last_tree_action = tree_action
+            end
             extension_response(rpc, message, { value = choice })
           end
-        end)
+        end, { thread_id = runtime.current_thread_id or current_thread_id() })
       end)
       return true
     end

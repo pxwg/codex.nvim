@@ -101,7 +101,7 @@ local return_forms = {
   raw = "action(local render toggle) -> notify",
   resume = "action(thread/resume or picker)",
   new = "action(thread/start)",
-  tree = "select(Pi session tree) -> notify(thread/tree) -> refresh thread",
+  tree = "select(Pi session tree) -> reveal locally or notify(thread/tree) -> refresh thread",
   review = "notify(review/start)",
   status = "page(config/read + account/rateLimits/read + local thread status)",
   ["debug-config"] = "page(config/read + configRequirements/read)",
@@ -224,6 +224,25 @@ end
 local function field(value, key)
   local object = as_table_or_nil(value)
   return object and object[key] or nil
+end
+
+local function tree_action(value)
+  local object = as_table_or_nil(value)
+  if not object then
+    return nil
+  end
+  local nested = object.treeAction or object.tree_action
+  if type(nested) == "table" then
+    return tree_action(nested)
+  end
+  if object.__coactNvimPiTreeAction ~= true then
+    return nil
+  end
+  local action = object.action
+  if action ~= "reveal" and action ~= "cancel" and action ~= "noop" and action ~= "navigateTree" then
+    return nil
+  end
+  return object
 end
 
 local function ensure_server(actions, callback)
@@ -1355,6 +1374,17 @@ local function open_tree(actions, thread_id, opts)
       function(err, result)
         if err then
           present_result(notify_result("thread/tree failed: " .. tostring(err.message or err), vim.log.levels.ERROR))
+          return
+        end
+        local action = tree_action(result)
+        if action and action.action == "reveal" then
+          present_result(notify_result(provider_title() .. " tree entry revealed"))
+          return
+        elseif action and action.action == "cancel" then
+          present_result(notify_result(provider_title() .. " tree navigation cancelled"))
+          return
+        elseif action and action.action == "noop" then
+          present_result(notify_result(provider_title() .. " tree unchanged"))
           return
         end
         local thread_payload = as_table_or_nil(field(result, "thread"))

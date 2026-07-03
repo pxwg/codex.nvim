@@ -430,6 +430,30 @@ function parseTreeArgs(args) {
   }
 }
 
+function treeAction(action, id, extra = {}) {
+  return {
+    __coactNvimPiTreeAction: true,
+    action,
+    id,
+    ...extra,
+  };
+}
+
+function normalizeTreeSelection(selection) {
+  if (selection && typeof selection === "object" && selection.__coactNvimPiTreeAction) {
+    const id = selection.id ?? selection.entryId ?? selection.entry_id;
+    return {
+      action: selection.action || "navigateTree",
+      id: id === undefined || id === null ? undefined : String(id),
+      fallbackReason: selection.fallbackReason ?? selection.fallback_reason,
+    };
+  }
+  if (selection === undefined || selection === null || selection === "") {
+    return { action: "cancel" };
+  }
+  return { action: "navigateTree", id: String(selection) };
+}
+
 function branchSnapshotPayload(ctx) {
   const entries = (ctx.sessionManager.getBranch() || [])
     .filter((entry) => entry?.type === "message" && (entry.message?.role === "user" || entry.message?.role === "assistant"))
@@ -457,13 +481,13 @@ async function handleTreeCommand(args, ctx) {
   const tree = ctx.sessionManager.getTree() || [];
   if (!tree.length) {
     ctx.ui.notify("No entries in session", "warning");
-    return;
+    return treeAction("cancel");
   }
 
   const leafId = ctx.sessionManager.getLeafId();
   const branchIds = new Set(ctx.sessionManager.getBranch().map((entry) => entry.id));
   const entriesById = collectEntries(tree);
-  const selectedId = await ctx.ui.select("Pi session tree", [
+  const selection = normalizeTreeSelection(await ctx.ui.select("Pi session tree", [
     {
       __coactNvimPiTree: true,
       tree,
@@ -471,19 +495,23 @@ async function handleTreeCommand(args, ctx) {
       activePathIds: Array.from(branchIds),
       initialSelectedId,
     },
-  ]);
-  if (!selectedId) {
+  ]));
+  if (selection.action === "cancel" || !selection.id) {
     ctx.ui.notify("Tree navigation cancelled", "info");
-    return;
+    return treeAction("cancel", selection.id);
   }
-  const target = entriesById.get(String(selectedId));
+  if (selection.action === "reveal") {
+    ctx.ui.notify("Revealed selected point in Neovim", "info");
+    return treeAction("reveal", selection.id);
+  }
+  const target = entriesById.get(String(selection.id));
   if (!target) {
     ctx.ui.notify("Tree navigation target not found", "error");
-    return;
+    return treeAction("cancel", selection.id, { fallbackReason: "target not found" });
   }
   if (target.id === leafId) {
     ctx.ui.notify("Already at this point", "info");
-    return;
+    return treeAction("noop", target.id);
   }
 
   let summarize = false;
@@ -495,14 +523,14 @@ async function handleTreeCommand(args, ctx) {
   ]);
   if (!summaryChoice) {
     ctx.ui.notify("Tree navigation cancelled", "info");
-    return;
+    return treeAction("cancel", target.id);
   }
   summarize = summaryChoice !== "No summary";
   if (summaryChoice === "Summarize with custom prompt") {
     customInstructions = await ctx.ui.editor("Custom summarization instructions");
     if (customInstructions === undefined) {
       ctx.ui.notify("Tree navigation cancelled", "info");
-      return;
+      return treeAction("cancel", target.id);
     }
   }
 
@@ -510,19 +538,20 @@ async function handleTreeCommand(args, ctx) {
   const result = await ctx.navigateTree(target.id, { summarize, customInstructions });
   if (result?.cancelled) {
     ctx.ui.notify("Tree navigation cancelled", "warning");
-    return;
+    return treeAction("cancel", target.id);
   }
   if (editorText !== undefined) {
     ctx.ui.setEditorText(editorText);
   }
   ctx.ui.notify("Navigated to selected point", "info");
+  return treeAction("navigateTree", target.id);
 }
 
 export default function (pi) {
   pi.registerCommand("coact-nvim-tree", {
     description: "Navigate the current session tree from coact.nvim",
     handler: async (args, ctx) => {
-      await handleTreeCommand(args, ctx);
+      return await handleTreeCommand(args, ctx);
     },
   });
 

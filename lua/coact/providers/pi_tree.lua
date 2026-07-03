@@ -639,6 +639,15 @@ local function selected_entry_id(state)
   return flat_node and entry_id(entry(flat_node.node)) or nil
 end
 
+local function tree_action(action, id, extra)
+  local result = vim.tbl_extend("force", {
+    __coactNvimPiTreeAction = true,
+    action = action,
+    id = id,
+  }, extra or {})
+  return result
+end
+
 local function render_model(state, width, height)
   width = math.max(40, tonumber(width) or 100)
   height = math.max(8, tonumber(height) or 20)
@@ -653,7 +662,7 @@ local function render_model(state, width, height)
 
   add_plain("Session Tree" .. status_labels(state), "CoactPiTreeTitle")
   add_plain(
-    "j/k ctrl-n/p move · ctrl-d/u half-page · ctrl-f/b page · gg/G edge · h/l branch · d/t/u/L/a filters · / search",
+    "j/k ctrl-n/p move · ctrl-d/u half-page · ctrl-f/b page · gg/G edge · h/l branch · enter tree · r reveal · d/t/u/L/a filters · / search",
     "CoactPiTreeHelp"
   )
   add_plain("Type / to search: " .. tostring(state.search_query or ""), "CoactPiTreeHelp")
@@ -862,6 +871,31 @@ local function finish(state, choice)
   end
 end
 
+local function reveal_selected(state)
+  local id = selected_entry_id(state)
+  if not id then
+    finish(state, nil)
+    return
+  end
+  local revealed = false
+  local reason = nil
+  if state.thread_id then
+    local ok, buffers = pcall(require, "coact.buffers")
+    if ok and type(buffers.reveal_tree_entry) == "function" then
+      revealed, reason = buffers.reveal_tree_entry(state.thread_id, id)
+    else
+      reason = "history reveal API is not available"
+    end
+  else
+    reason = "active thread is not available"
+  end
+  if revealed then
+    finish(state, tree_action("reveal", id))
+  else
+    finish(state, tree_action("navigateTree", id, { fallbackReason = reason or "tree entry is not visible locally" }))
+  end
+end
+
 local function force_normal_mode(state)
   if state.winid and vim.api.nvim_win_is_valid(state.winid) then
     pcall(vim.api.nvim_set_current_win, state.winid)
@@ -1007,6 +1041,9 @@ local function map_keys(state)
   key("<CR>", function()
     finish(state, selected_entry_id(state))
   end)
+  key("r", function()
+    reveal_selected(state)
+  end)
   key("q", function()
     finish(state, nil)
   end)
@@ -1066,7 +1103,7 @@ local function map_keys(state)
       cycle_filter(state, -1)
     end)
   )
-  key({ "i", "I", "A", "s", "S", "c", "C", "r", "R", "p", "P", "x", "X", "~", "<Insert>", "v", "V", "<C-v>" }, "<Nop>")
+  key({ "i", "I", "A", "s", "S", "c", "C", "R", "p", "P", "x", "X", "~", "<Insert>", "v", "V", "<C-v>" }, "<Nop>")
 end
 
 function M.is_request(message)
@@ -1074,10 +1111,12 @@ function M.is_request(message)
   return type(options[1]) == "table" and options[1].__coactNvimPiTree == true
 end
 
-function M.select(message, callback)
+function M.select(message, callback, opts)
   local options = as_table(as_table(message).options)
   local payload = as_table(options[1])
   local state = make_state(payload)
+  opts = opts or {}
+  state.thread_id = opts.thread_id or opts.threadId or value(payload.threadId) or value(payload.thread_id)
   state.callback = callback
   setup_highlights()
 

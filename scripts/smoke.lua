@@ -435,6 +435,7 @@ do
   assert(
     pi_extension_source:match('registerCommand%("coact%-nvim%-tree"')
       and pi_extension_source:match("navigateTree")
+      and pi_extension_source:match("__coactNvimPiTreeAction")
       and pi_extension_source:match('registerCommand%("coact%-nvim%-branch%-snapshot"')
       and pi_extension_source:match("__coactNvimPiBranchSnapshot"),
     "Pi edit bridge extension should register tree navigation and branch snapshots"
@@ -584,6 +585,83 @@ do
       "Pi tree picker should sync selection from native cursor movement"
     )
     pcall(vim.api.nvim_win_close, vim.api.nvim_get_current_win(), true)
+
+    local pi_buffers = require("coact.buffers")
+    local reveal_thread_id = "pi:tree-reveal-smoke"
+    state.upsert_item(reveal_thread_id, "tree-reveal-turn", {
+      id = "tree-reveal-user-item",
+      type = "userMessage",
+      content = { { type = "text", text = "tree reveal prompt" } },
+      treeEntryId = "entry-reveal-user",
+    })
+    local reveal_bufnr, reveal_winid = pi_buffers.open(reveal_thread_id)
+    local reveal_choice = nil
+    pi_tree.select({
+      options = {
+        {
+          __coactNvimPiTree = true,
+          leafId = "entry-reveal-user",
+          initialSelectedId = "entry-reveal-user",
+          tree = {
+            {
+              entry = {
+                id = "entry-reveal-user",
+                type = "message",
+                message = { role = "user", content = { { type = "text", text = "tree reveal prompt" } } },
+              },
+              children = {},
+            },
+          },
+        },
+      },
+    }, function(choice)
+      reveal_choice = choice
+    end, { thread_id = reveal_thread_id })
+    assert(type(vim.fn.maparg("r", "n", false, true).callback) == "function", "Pi tree picker should bind local reveal")
+    vim.fn.maparg("r", "n", false, true).callback()
+    assert(
+      reveal_choice
+        and reveal_choice.__coactNvimPiTreeAction == true
+        and reveal_choice.action == "reveal"
+        and reveal_choice.id == "entry-reveal-user",
+      "Pi tree reveal should return a local reveal action"
+    )
+    assert(vim.api.nvim_get_current_buf() == reveal_bufnr, "Pi tree reveal should focus the history buffer")
+    local reveal_cursor = vim.api.nvim_win_get_cursor(reveal_winid)
+    local reveal_cursor_line = vim.api.nvim_buf_get_lines(reveal_bufnr, reveal_cursor[1] - 1, reveal_cursor[1], false)[1]
+      or ""
+    assert(reveal_cursor_line:find("## You", 1, true), "Pi tree reveal should jump to the rendered message header")
+
+    local fallback_choice = nil
+    pi_tree.select({
+      options = {
+        {
+          __coactNvimPiTree = true,
+          leafId = "entry-reveal-user",
+          initialSelectedId = "entry-other-branch",
+          tree = {
+            {
+              entry = {
+                id = "entry-other-branch",
+                type = "message",
+                message = { role = "user", content = { { type = "text", text = "other branch prompt" } } },
+              },
+              children = {},
+            },
+          },
+        },
+      },
+    }, function(choice)
+      fallback_choice = choice
+    end, { thread_id = reveal_thread_id })
+    vim.fn.maparg("r", "n", false, true).callback()
+    assert(
+      fallback_choice
+        and fallback_choice.__coactNvimPiTreeAction == true
+        and fallback_choice.action == "navigateTree"
+        and fallback_choice.id == "entry-other-branch",
+      "Pi tree reveal should fall back to native tree navigation when the entry is not on the current branch"
+    )
   end)()
   local pi_thread = pi_provider._thread_from_state({
     sessionId = "smoke-session",
@@ -1329,6 +1407,39 @@ do
         and pi_tree_result.thread.turns[1].items[1].content[1].text == "tree-selected prompt"
         and pi_tree_result.thread.turns[1].items[1].treeEntryId == "entry-tree-user",
       "Pi thread/tree should return a replacement branch snapshot"
+    )
+  end)();
+  (function()
+    local pi_tree_reveal_result = nil
+    local pi_tree_reveal_calls = {}
+    local pi_tree_reveal_handled = pi_provider.custom_request(
+      {
+        _request_message = function(method, params, callback)
+          table.insert(pi_tree_reveal_calls, { method = method, params = params })
+          assert(method == "prompt", "Pi local tree reveal should only send the tree prompt")
+          pi_provider._runtime.last_tree_action = {
+            __coactNvimPiTreeAction = true,
+            action = "reveal",
+            id = "entry-local-reveal",
+          }
+          callback(nil, {})
+        end,
+      },
+      "thread/tree",
+      { cwd = pi_cwd, threadId = "pi:pi-old", initialSelectedId = "entry-local-reveal" },
+      function(err, result)
+        assert(not err, "Pi thread/tree local reveal should not fail in smoke")
+        pi_tree_reveal_result = result
+      end
+    )
+    assert(pi_tree_reveal_handled, "Pi provider should handle thread/tree local reveal")
+    assert(
+      #pi_tree_reveal_calls == 1
+        and pi_tree_reveal_result
+        and pi_tree_reveal_result.treeAction
+        and pi_tree_reveal_result.treeAction.action == "reveal"
+        and pi_tree_reveal_result.treeAction.id == "entry-local-reveal",
+      "Pi thread/tree local reveal should skip native branch refresh"
     )
   end)();
   (function()
@@ -3376,6 +3487,29 @@ do
     assert(pi_tree_request.initialSelectedId == "entry-target", "Pi /tree should pass an initial selected entry id")
     assert(pi_tree_notice == "Pi tree updated", "Pi /tree should notify after refreshing the thread")
     assert(state.get_thread("pi-thread-tree").items["tree-item"], "Pi /tree should update thread state from result")
+
+    pi_tree_notice = nil
+    rpc.request = function(method, params, callback)
+      assert(method == "thread/tree", "Pi /tree local reveal should request thread/tree")
+      callback(nil, {
+        treeAction = {
+          __coactNvimPiTreeAction = true,
+          action = "reveal",
+          id = "entry-target",
+        },
+      })
+    end
+    util.notify = function(message)
+      pi_tree_notice = message
+    end
+    slash.dispatch("/tree entry-target", "pi-thread-tree", {
+      ensure_server = function(callback)
+        callback()
+      end,
+    })
+    rpc.request = original_rpc_request
+    util.notify = original_notify
+    assert(pi_tree_notice == "Pi tree entry revealed", "Pi /tree should notify after a local reveal")
     coact.setup()
   end
 
