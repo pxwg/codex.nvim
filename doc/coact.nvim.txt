@@ -34,7 +34,9 @@ Opening a thread starts in preview state, where the transcript uses the full UI
 height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`,
 `c`, `cc`, or `S` to enter compose state and open the unnamed `coact-input`
 composer below it. Type there and press CTRL-S or normal-mode ENTER to submit;
-normal-mode `q` returns to preview without discarding the draft. The composer
+normal-mode `q` returns to preview without discarding the draft. Press
+normal-mode `K` over an `@...` context token in the composer to open the same
+LSP-style hover float used by completion documentation. The composer
 grows with wrapped input up to the configured maximum height, then scrolls
 internally. It intentionally does not use a `coact://` buffer name so
 path-oriented completion sources keep a normal editing context. Reasoning,
@@ -470,7 +472,7 @@ Thread/composer buffer keys:
   ENTER     submit prompt from composer normal mode
   i/a/...   open composer from history preview
   za        expand/collapse placeholder block
-  K         open full block detail
+  K         history opens full block detail; composer hovers @... context docs
   <Esc><Esc>
             with Pi, open the session tree; history preselects the current
             message when it has a tree entry id, composer opens the plain tree

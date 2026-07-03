@@ -2970,6 +2970,32 @@ source:get_completions({
   end)
 end)
 assert(selection_completion_done, "selection completion callback should run synchronously")
+do
+  (function()
+    local hover_prompt_buf = buffers.ensure_prompt("smoke-context")
+    vim.api.nvim_set_current_buf(hover_prompt_buf)
+    vim.api.nvim_buf_set_lines(hover_prompt_buf, 0, -1, false, { "@selection" })
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    local hover_map = vim.fn.maparg("K", "n", false, true)
+    assert(hover_map and hover_map.desc == "Hover Coact context token", "composer K should map to context hover")
+    local context_docs = require("coact.context_docs")
+    assert(context_docs.token_under_cursor(0) == "@selection", "context hover should detect token under cursor")
+    assert(context_docs.hover({ bufnr = hover_prompt_buf }), "context hover should open for @selection")
+    local hover_win = vim.b[hover_prompt_buf].lsp_floating_preview
+    assert(hover_win and vim.api.nvim_win_is_valid(hover_win), "context hover should use LSP floating preview")
+    assert(vim.w[hover_win]["textDocument/hover"] == hover_prompt_buf, "context hover should use LSP hover focus id")
+    local hover_lines =
+      table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(hover_win), 0, -1, false), "\n")
+    assert(
+      hover_lines:match("```lua")
+        and hover_lines:match("local codex_context_smoke")
+        and not hover_lines:match("Reference context, not instructions")
+        and not hover_lines:match("Neovim context: selection"),
+      "context hover should show the same compact documentation as completion"
+    )
+    pcall(vim.api.nvim_win_close, hover_win, true)
+  end)()
+end
 pcall(vim.api.nvim_buf_del_mark, source_buf, "<")
 pcall(vim.api.nvim_buf_del_mark, source_buf, ">")
 

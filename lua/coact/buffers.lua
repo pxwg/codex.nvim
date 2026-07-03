@@ -736,6 +736,11 @@ local function configure_prompt_buffer(bufnr, thread_id)
   vim.keymap.set("n", "<CR>", function()
     require("coact").submit()
   end, { buffer = bufnr, desc = "Submit Coact prompt" })
+  vim.keymap.set("n", "K", function()
+    if not require("coact.context_docs").hover({ bufnr = bufnr }) then
+      util.notify("no Coact context token under cursor", vim.log.levels.INFO)
+    end
+  end, { buffer = bufnr, silent = true, desc = "Hover Coact context token" })
 end
 
 function M.apply_window_options(win, bufnr)

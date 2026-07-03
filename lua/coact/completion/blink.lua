@@ -1,4 +1,5 @@
 local catalog = require("coact.catalog")
+local context_docs = require("coact.context_docs")
 local state = require("coact.state")
 
 local M = {}
@@ -59,64 +60,18 @@ local function completion_preview_token(item)
   return nil
 end
 
-local function input_preview(input)
-  if type(input) ~= "table" then
-    return nil
-  end
-  if input.type == "text" then
-    return input.text
-  end
-  if input.type == "localImage" then
-    return table.concat({
-      "Image context that will be attached:",
-      "- type: localImage",
-      "- path: " .. tostring(input.path or ""),
-    }, "\n")
-  end
-  if input.type == "image" then
-    return table.concat({
-      "Image context that will be attached:",
-      "- type: image",
-      "- url: " .. tostring(input.url or ""),
-    }, "\n")
-  end
-  return vim.inspect(input)
-end
-
 local function resolved_context_documentation(item)
   local data = item.data or {}
   local token = data.context_preview_token or completion_preview_token(item)
   if not token then
     return nil
   end
-  local ok, parser = pcall(require, "coact.parser")
-  if not ok then
-    return nil
-  end
   local ctx = data.completion_context or {}
-  local thread = ctx.bufnr and state.thread_for_buf(ctx.bufnr) or nil
-  local resolved_ok, payload = pcall(parser._resolve_context_payload, token, { thread = thread })
-  if not resolved_ok or type(payload) ~= "table" or type(payload.inputs) ~= "table" or #payload.inputs == 0 then
-    return ("No injectable context preview is available for %s."):format(token)
-  end
-  if type(payload.documentation) == "string" and payload.documentation ~= "" then
-    return payload.documentation
-  end
-
-  local inputs = payload.inputs
-  local lines = {
-    "Context preview for " .. token,
-    "",
-    "This is what coact.nvim will inject when this token is submitted:",
-    "",
-  }
-  for index, input in ipairs(inputs) do
-    if index > 1 then
-      table.insert(lines, "")
-    end
-    table.insert(lines, input_preview(input) or vim.inspect(input))
-  end
-  return table.concat(lines, "\n")
+  local documentation = context_docs.documentation_for_token(token, {
+    bufnr = ctx.bufnr,
+    thread = ctx.bufnr and state.thread_for_buf(ctx.bufnr) or nil,
+  })
+  return documentation or ("No injectable context preview is available for %s."):format(token)
 end
 
 local function item_data(item, ctx)
