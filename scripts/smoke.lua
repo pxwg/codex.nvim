@@ -1926,6 +1926,66 @@ assert(
   explicit_selection_context[#explicit_selection_context].text == "explain selection",
   "@selection context should precede the user request"
 )
+do
+  (function()
+    local visual_context = require("coact.context")
+    local visual_selection_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(visual_selection_buf, "/tmp/coact-visual-selection-smoke.txt")
+    vim.api.nvim_buf_set_lines(visual_selection_buf, 0, -1, false, { "abcdef", "uvwxyz" })
+    vim.bo[visual_selection_buf].filetype = "text"
+    vim.api.nvim_set_current_buf(visual_selection_buf)
+    vim.api.nvim_win_set_cursor(0, { 1, 1 })
+    vim.cmd("normal! v2l\027")
+    vim.wait(1000, function()
+      local latest = visual_context._latest_selection()
+      return latest and latest.bufnr == visual_selection_buf and latest.content == "bcd"
+    end, 20)
+    local charwise_selection = visual_context.selection_for_buffer(visual_selection_buf)
+    assert(
+      charwise_selection and charwise_selection.mode == "v" and charwise_selection.content == "bcd",
+      "selection tracker should capture precise charwise visual text"
+    )
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd("normal! Vj\027")
+    vim.wait(1000, function()
+      local latest = visual_context._latest_selection()
+      return latest and latest.bufnr == visual_selection_buf and latest.mode == "V"
+    end, 20)
+    local linewise_selection = visual_context.selection_for_buffer(visual_selection_buf)
+    assert(
+      linewise_selection and linewise_selection.content == "abcdef\nuvwxyz",
+      "selection tracker should capture linewise visual text"
+    )
+    local blockwise_mode = vim.api.nvim_replace_termcodes("<C-v>", true, false, true)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd("normal! 0" .. blockwise_mode .. "j2l\027")
+    vim.wait(1000, function()
+      local latest = visual_context._latest_selection()
+      return latest and latest.bufnr == visual_selection_buf and latest.mode == blockwise_mode
+    end, 20)
+    local blockwise_selection = visual_context.selection_for_buffer(visual_selection_buf)
+    assert(
+      blockwise_selection and blockwise_selection.content == "abc\nuvw",
+      "selection tracker should capture blockwise visual text"
+    )
+    local coact_input_selection_buf = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_lines(coact_input_selection_buf, 0, -1, false, { "prompt selection should be ignored" })
+    vim.bo[coact_input_selection_buf].filetype = "coact-input"
+    vim.api.nvim_set_current_buf(coact_input_selection_buf)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd("normal! v5l\027")
+    vim.wait(50)
+    local latest_selection_after_coact_input = visual_context._latest_selection()
+    assert(
+      latest_selection_after_coact_input and latest_selection_after_coact_input.bufnr == visual_selection_buf,
+      "selection tracker should ignore Coact input visual selections"
+    )
+    assert(
+      visual_context.selection_for_buffer(coact_input_selection_buf) == nil,
+      "Coact input selections should not become context"
+    )
+  end)()
+end
 
 local original_ui_select_for_context = vim.ui.select
 local original_snacks_for_context = package.loaded["snacks"]
@@ -2900,12 +2960,12 @@ source:get_completions({
 }, function(result)
   assert(#result.items == 1 and result.items[1].label == "@selection", "completion should return @selection")
   source:resolve(result.items[1], function(item)
-    assert(
-      item.documentation
-        and item.documentation:match("local codex_context_smoke")
-        and item.documentation:match("L1%-L2"),
-      "@selection completion should preview source-buffer selection content"
-    )
+    assert(item.documentation == table.concat({
+      "```lua",
+      "local codex_context_smoke = true",
+      "return codex_context_smoke",
+      "```",
+    }, "\n"), "@selection completion should preview only the selected text fenced with filetype")
     selection_completion_done = true
   end)
 end)

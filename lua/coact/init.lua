@@ -39,6 +39,7 @@ local function setup_once()
   if not did_setup then
     config.setup()
     core.setup()
+    context.setup()
     require("coact.native_apply_patch_hook").setup()
     require("coact.behavior").setup()
     did_setup = true
@@ -207,6 +208,7 @@ end
 function M.setup(opts)
   config.setup(opts)
   core.setup()
+  context.setup()
   require("coact.native_apply_patch_hook").setup()
   require("coact.behavior").setup()
   setup_lifecycle()
@@ -590,7 +592,7 @@ function M.add_selection()
   local thread = active_or_current_thread()
   local source_bufnr = state.thread_for_buf(0) and context.target_buffer(thread) or vim.api.nvim_get_current_buf()
   if not context.selection_for_buffer(source_bufnr) then
-    return util.notify("no visual selection found in the source buffer", vim.log.levels.WARN)
+    return util.notify("no remembered Visual selection found in the source buffer", vim.log.levels.WARN)
   end
   append_prompt_context("@selection")
 end

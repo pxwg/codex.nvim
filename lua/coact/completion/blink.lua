@@ -1,5 +1,4 @@
 local catalog = require("coact.catalog")
-local context = require("coact.context")
 local state = require("coact.state")
 
 local M = {}
@@ -32,23 +31,6 @@ local function completion_kind()
     return {}
   end
   return types.CompletionItemKind
-end
-
-local function selection_documentation(ctx)
-  local bufnr = ctx and ctx.bufnr or vim.api.nvim_get_current_buf()
-  local thread = bufnr and state.thread_for_buf(bufnr) or nil
-  local target = context.target_buffer(thread)
-  local selected = context.selection_for_buffer(target)
-  if not selected then
-    return "No visual selection found in the source buffer."
-  end
-  return table.concat({
-    ("Current visual selection from %s, L%d-L%d:"):format(selected.filename, selected.start_line, selected.end_line),
-    "",
-    "```" .. (selected.filetype or ""),
-    selected.content,
-    "```",
-  }, "\n")
 end
 
 local function completion_context(ctx)
@@ -107,21 +89,21 @@ local function resolved_context_documentation(item)
   if not token then
     return nil
   end
-  if token == "@selection" then
-    return selection_documentation(data.completion_context)
-  end
-
   local ok, parser = pcall(require, "coact.parser")
   if not ok then
     return nil
   end
   local ctx = data.completion_context or {}
   local thread = ctx.bufnr and state.thread_for_buf(ctx.bufnr) or nil
-  local resolved_ok, inputs = pcall(parser._resolve_context_token, token, { thread = thread })
-  if not resolved_ok or type(inputs) ~= "table" or #inputs == 0 then
+  local resolved_ok, payload = pcall(parser._resolve_context_payload, token, { thread = thread })
+  if not resolved_ok or type(payload) ~= "table" or type(payload.inputs) ~= "table" or #payload.inputs == 0 then
     return ("No injectable context preview is available for %s."):format(token)
   end
+  if type(payload.documentation) == "string" and payload.documentation ~= "" then
+    return payload.documentation
+  end
 
+  local inputs = payload.inputs
   local lines = {
     "Context preview for " .. token,
     "",

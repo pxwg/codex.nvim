@@ -51,6 +51,14 @@ local function reference_context_text(text)
   }, "\n")
 end
 
+local function context_payload(prompt, documentation)
+  return {
+    __coact_context_payload = true,
+    prompt = prompt,
+    documentation = documentation,
+  }
+end
+
 local function project_root()
   local cwd = vim.fn.getcwd()
   local ok, root = pcall(vim.fs.root, cwd, { ".git" })
@@ -93,6 +101,14 @@ context_handlers.buffer = function()
   }, "\n")
 end
 
+local function selection_documentation(selected)
+  return table.concat({
+    "```" .. (selected.filetype or ""),
+    selected.content,
+    "```",
+  }, "\n")
+end
+
 context_handlers.selection = function(_, opts)
   opts = opts or {}
   local thread = opts.thread or require("coact.state").thread_for_buf(0)
@@ -116,7 +132,7 @@ context_handlers.selection = function(_, opts)
     table.insert(out, "Diagnostics in selection:")
     table.insert(out, diagnostics)
   end
-  return table.concat(out, "\n")
+  return context_payload(table.concat(out, "\n"), selection_documentation(selected))
 end
 
 context_handlers.cursor = function()
@@ -267,7 +283,7 @@ local function parse_context_token(token)
   return nil
 end
 
-local function normalize_context_result(value)
+local function normalize_context_inputs(value)
   if type(value) == "string" then
     local input = text_input(reference_context_text(value))
     return input and { input } or nil
@@ -293,7 +309,26 @@ local function normalize_context_result(value)
   return #inputs > 0 and inputs or nil
 end
 
-local function resolve_context_token(token, opts)
+local function normalize_context_result(value)
+  if type(value) == "table" and value.__coact_context_payload == true then
+    local inputs = normalize_context_inputs(value.prompt)
+    if not inputs then
+      return nil
+    end
+    return {
+      inputs = inputs,
+      documentation = value.documentation,
+    }
+  end
+
+  local inputs = normalize_context_inputs(value)
+  if not inputs then
+    return nil
+  end
+  return { inputs = inputs }
+end
+
+local function resolve_context_payload(token, opts)
   local parsed = parse_context_token(token)
   if not parsed then
     return nil
@@ -312,6 +347,11 @@ local function resolve_context_token(token, opts)
     end
   end
   return nil
+end
+
+local function resolve_context_token(token, opts)
+  local payload = resolve_context_payload(token, opts)
+  return payload and payload.inputs or nil
 end
 
 local function prompt_token(line)
@@ -369,6 +409,7 @@ function M.parse(text, parse_opts)
 end
 
 M._parse_context_token = parse_context_token
+M._resolve_context_payload = resolve_context_payload
 M._resolve_context_token = resolve_context_token
 M._reference_context_text = reference_context_text
 

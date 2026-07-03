@@ -7,7 +7,7 @@ local inflight = {}
 local static = {
   ["@"] = {
     { label = "@buffer", detail = "Attach current buffer RPC metadata and text" },
-    { label = "@selection", detail = "Attach the current visual selection" },
+    { label = "@selection", detail = "Attach the last source Visual selection" },
     { label = "@cursor", detail = "Attach lines around the cursor" },
     { label = "@diagnostics", detail = "Attach diagnostics for the current buffer" },
     { label = "@quickfix", detail = "Attach the quickfix list" },

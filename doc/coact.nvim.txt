@@ -235,7 +235,7 @@ numbers, and loaded thread ids for `open`/`resume`.
 
 `:Coact add-buffer` appends the current source buffer path to the active chat
 prompt using direct `@path` syntax. `:Coact add-selection` appends
-`@selection` when the source buffer has visual selection marks.
+`@selection` when the source buffer has a remembered Visual selection.
 
 ==============================================================================
 HEALTH                                                   *coact.nvim-health*
@@ -302,23 +302,25 @@ provider inputs before the turn is sent. Argument providers use
   @lua/coact/init.lua
 <
 The blink source completes paths after `@file:` and `@image:` using that
-backtick form. Its documentation window previews the context that the selected
-`@...` completion will inject, including file contents, image attachment
-metadata, selections, diagnostics, and behavior diffs when available. In insert
-mode, pressing TAB immediately after `@file:` opens `snacks.picker.files` when
-available, with |vim.ui.select()| only as a fallback; the selected file is
-inserted as direct `@path/to/file` syntax. `@image:` keeps the provider form
+backtick form. Its documentation window uses context-specific compact previews
+when available, including file contents, image attachment metadata, selections,
+diagnostics, and behavior diffs without necessarily showing the full submitted
+reference prompt. In insert mode, pressing TAB immediately after `@file:` opens
+`snacks.picker.files` when available, with |vim.ui.select()| only as a
+fallback; the selected file is inserted as direct `@path/to/file` syntax.
+`@image:` keeps the provider form
 because image inputs need image-specific attachment metadata. Custom hooks can
 be registered with `require("coact.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, coact.nvim remembers that source
 buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,
 `@diagnostics`, and Neovim dynamic tools do not read a Coact UI buffer itself.
-`@selection` reads the source buffer's visual selection marks and includes file
-and range metadata plus diagnostics in the selected range. Selection context is
-attached only when the prompt explicitly contains `@selection` or
-`:Coact add-selection` inserts it, so context injection remains prompt
-controlled.
+`@selection` remembers the last non-Coact Visual selection per source buffer,
+captures precise characterwise, linewise, or blockwise text from Neovim's
+visual marks and mode, and includes file and range metadata plus diagnostics in
+the selected range. Selection context is attached only when the prompt explicitly
+contains `@selection` or `:Coact add-selection` inserts it, so context injection
+remains prompt controlled.
 Expanded text contexts are sent before the user request and are labeled as
 reference context, not instructions; the user request remains the final text
 input for semantic priority.
@@ -589,7 +591,7 @@ add_current_buffer()~
                                                         *coact.add_selection()*
 add_selection()~
     Append `@selection` to the active chat prompt when the source buffer has a
-    visual selection.
+    remembered Visual selection.
 
                                                         *coact.on()*
 on({event}, {callback})~
