@@ -2,7 +2,7 @@
 
 ## Verification
 
-- After behavior changes to codex.nvim Lua, docs, app-server/RPC handling, parser/completion, slash commands, patch review, dynamic tools, or TUI rendering, run the headless smoke script:
+- After behavior changes to coact.nvim Lua, docs, app-server/RPC handling, parser/completion, slash commands, patch review, dynamic tools, or TUI rendering, run the headless smoke script:
 
 ```sh
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
@@ -21,14 +21,14 @@ nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 
 ## Context And Dynamic Tools
 
-- Prompt context tokens and Neovim dynamic tools must target the source buffer that opened the Codex thread, not the chat buffer.
+- Prompt context tokens and Neovim dynamic tools must target the source buffer that opened the Coact thread, not the chat buffer.
 - Preserve source-buffer targeting when changing parser, completion, context, buffers, or dynamic tools.
 
 ## Edit Modes
 
 - In pair edit mode, workspace edits should use Codex's native `apply_patch` tool.
 - Pair mode routes native `apply_patch` through a Neovim `PreToolUse` hook that opens interactive file-buffer hunk review before the native tool completes.
-- After Neovim review, accepted hunks are written through the `patch_session` file-buffer path, then codex.nvim returns to native `apply_patch` with an approval and no-op completion patch.
+- After Neovim review, accepted hunks are written through the `patch_session` file-buffer path, then coact.nvim returns to native `apply_patch` with an approval and no-op completion patch.
 - Pair mode should accept native app-server permission/file-change approvals only for `apply_patch` items already reviewed by the Neovim hook; unreviewed native file changes should be declined.
 - Do not call `nvim.apply_patch` in pair mode unless explicit legacy compatibility is enabled for that path.
 - Patch application must refuse modified loaded buffers unless a future safe path explicitly preserves or reconciles user buffer changes.
