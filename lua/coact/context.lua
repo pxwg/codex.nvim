@@ -119,12 +119,68 @@ function M.buffer_label(bufnr)
   return name ~= "" and name or "[No Name]"
 end
 
-function M.display_path(path)
-  path = vim.fs.normalize(vim.fn.expand(tostring(path or "")))
-  local rel = vim.fn.fnamemodify(path, ":.")
-  if rel ~= "" and rel ~= path and not rel:match("^%.%./") then
-    path = rel
+local function is_url(value)
+  return tostring(value or ""):match("^%a[%w+.-]*://") ~= nil
+end
+
+local function is_absolute_path(path)
+  return tostring(path or ""):match("^/") ~= nil or tostring(path or ""):match("^%a:[/\\]") ~= nil
+end
+
+local function path_root_and_parts(path)
+  path = tostring(path or ""):gsub("\\", "/")
+  local drive = path:match("^(%a:)/")
+  if drive then
+    path = path:sub(#drive + 2)
+    return drive:lower(), vim.split(path, "/", { plain = true, trimempty = true })
   end
+  if path:sub(1, 1) == "/" then
+    path = path:gsub("^/+", "")
+    return "/", vim.split(path, "/", { plain = true, trimempty = true })
+  end
+  return "", vim.split(path, "/", { plain = true, trimempty = true })
+end
+
+local function relative_path(from, to)
+  local from_root, from_parts = path_root_and_parts(vim.fs.normalize(from))
+  local to_root, to_parts = path_root_and_parts(vim.fs.normalize(to))
+  if from_root ~= to_root then
+    return nil
+  end
+
+  local index = 1
+  while from_parts[index] and to_parts[index] and from_parts[index] == to_parts[index] do
+    index = index + 1
+  end
+
+  local parts = {}
+  for _ = index, #from_parts do
+    table.insert(parts, "..")
+  end
+  for part_index = index, #to_parts do
+    table.insert(parts, to_parts[part_index])
+  end
+  return #parts > 0 and table.concat(parts, "/") or "."
+end
+
+local function workspace_relative_path(path)
+  path = tostring(path or "")
+  if path == "" or is_url(path) then
+    return path
+  end
+
+  local config = require("coact.config")
+  local cwd = vim.fs.normalize(vim.fn.expand(config.cwd()))
+  path = vim.fn.expand(path)
+  if not is_absolute_path(path) then
+    path = vim.fs.joinpath(cwd, path)
+  end
+  path = vim.fs.normalize(path)
+  return relative_path(cwd, path) or path
+end
+
+function M.display_path(path)
+  path = workspace_relative_path(path)
   if path:find("%s") then
     return "`" .. path:gsub("`", "\\`") .. "`"
   end
@@ -423,7 +479,7 @@ local function workspace_files(kind)
   if #files == 0 then
     for _, path in ipairs(vim.fn.globpath(cwd, "**/*", false, true)) do
       if vim.fn.filereadable(path) == 1 then
-        table.insert(files, vim.fn.fnamemodify(path, ":."))
+        table.insert(files, workspace_relative_path(path))
       end
     end
   end

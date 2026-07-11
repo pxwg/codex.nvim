@@ -1722,10 +1722,17 @@ assert(
   file_asset_parsed[1] and file_asset_parsed[1].text:match("text asset with spaces"),
   "@file should accept backtick-quoted paths with spaces"
 )
+assert(
+  not require("coact.context").display_path(text_asset):match("^/"),
+  "displayed context paths should prefer workspace-relative paths"
+)
 local official_file_parsed = parser.parse("@" .. require("coact.context").display_path(text_asset))
 assert(
-  official_file_parsed[1] and official_file_parsed[1].text:match("text asset with spaces"),
-  "@path should expand Codex official file context syntax"
+  official_file_parsed[1]
+    and official_file_parsed[1].type == "text"
+    and official_file_parsed[1].text:match("^@")
+    and not official_file_parsed[1].text:match("text asset with spaces"),
+  "direct @path mentions should stay compact instead of expanding file contents"
 )
 local image_asset_parsed = parser.parse("@image:`" .. image_asset .. "`")
 assert(image_asset_parsed[1] and image_asset_parsed[1].type == "localImage", "@image should attach local images")
@@ -2146,7 +2153,7 @@ package.loaded["snacks.picker.util"] = nil
 assert(snacks_file_picker_called, "@file: hook should reuse snacks file picker when available")
 assert(
   vim.api.nvim_buf_get_lines(hook_buf, 0, 1, false)[1] == "@README.md",
-  "@file: hook should replace provider syntax with official @path syntax"
+  "@file: hook should replace provider syntax with compact @path mention syntax"
 )
 vim.api.nvim_set_current_buf(source_buf)
 coact.add_current_buffer()
@@ -3158,17 +3165,10 @@ source:get_completions({
   line = file_completion_line,
   cursor = { 1, #file_completion_line },
 }, function(result)
-  assert(#result.items >= 1, "file path completion should return path candidates")
-  assert(result.items[1].label:match("^@file:`"), "file path completion should use backtick quoting")
-  source:resolve(result.items[1], function(item)
-    assert(
-      item.documentation and item.documentation:match("text asset with spaces"),
-      "file path completion documentation should preview injected file context"
-    )
-    path_done = true
-  end)
+  assert(#result.items == 0, "file path completion should be handled by the picker hook, not blink")
+  path_done = true
 end)
-assert(path_done, "path completion callback should run synchronously")
+assert(path_done, "path completion suppression callback should run synchronously")
 
 local image_path_done = false
 local image_completion_line = "@image:`" .. asset_dir .. "/sample"
@@ -3176,19 +3176,10 @@ source:get_completions({
   line = image_completion_line,
   cursor = { 1, #image_completion_line },
 }, function(result)
-  assert(
-    #result.items == 1 and result.items[1].label:match("sample image%.png"),
-    "image completion should return image files"
-  )
-  source:resolve(result.items[1], function(item)
-    assert(
-      item.documentation and item.documentation:match("localImage") and item.documentation:match("sample image%.png"),
-      "image completion documentation should preview attached image context"
-    )
-    image_path_done = true
-  end)
+  assert(#result.items == 0, "image path completion should be handled by the picker hook, not blink")
+  image_path_done = true
 end)
-assert(image_path_done, "image path completion callback should run synchronously")
+assert(image_path_done, "image path completion suppression callback should run synchronously")
 
 local skill_done = false
 source:get_completions({

@@ -491,11 +491,12 @@ end
 
 local function context_tab_keymap(bufnr)
   vim.keymap.set("i", "<Tab>", function()
-    if vim.fn.pumvisible() == 1 then
-      return "<C-n>"
-    end
+    local menu_visible = vim.fn.pumvisible() == 1
     if require("coact.context").trigger_hook() then
-      return ""
+      return menu_visible and "<C-e>" or ""
+    end
+    if menu_visible then
+      return "<C-n>"
     end
     return "\t"
   end, { buffer = bufnr, expr = true, desc = "Trigger Coact context hook" })

@@ -422,12 +422,9 @@ function M.items_for_trigger(trigger, prefix, callback)
   end
   local kind = M.kind_for_trigger(trigger, prefix)
   if not kind then
-    if trigger == "@" then
-      local path_items = M.path_items(prefix)
-      if path_items then
-        callback(path_items)
-        return
-      end
+    if trigger == "@" and path_arg_prefix(prefix) then
+      callback({})
+      return
     end
     callback(M.static_for_trigger(trigger))
     return

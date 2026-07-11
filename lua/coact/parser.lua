@@ -346,12 +346,6 @@ local function resolve_context_payload(token, opts)
     return ok and normalize_context_result(value) or nil
   end
 
-  if not parsed.has_arg then
-    local value = file_context(parsed.name)
-    if value then
-      return normalize_context_result(value)
-    end
-  end
   return nil
 end
 

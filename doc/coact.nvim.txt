@@ -236,8 +236,8 @@ Command-line completion covers subcommands, `attach all`, loaded chat buffer
 numbers, and loaded thread ids for `open`/`resume`.
 
 `:Coact add-buffer` appends the current source buffer path to the active chat
-prompt using direct `@path` syntax. `:Coact add-selection` appends
-`@selection` when the source buffer has a remembered Visual selection.
+prompt using compact direct `@path` mention syntax. `:Coact add-selection`
+appends `@selection` when the source buffer has a remembered Visual selection.
 
 ==============================================================================
 HEALTH                                                   *coact.nvim-health*
@@ -295,24 +295,30 @@ update the active thread where the provider supports it. `/model` also offers
 the selected model's advertised thinking-effort choices when the provider
 returns them.
 
-`@...` candidates are Neovim context shortcuts. They expand into additional
-provider inputs before the turn is sent. Argument providers use
-`@provider:input`; paths with spaces can wrap the path in backticks:
+Most `@...` candidates are Neovim context shortcuts. They expand into
+additional provider inputs before the turn is sent. Argument providers use
+`@provider:input`; paths with spaces can wrap the path in backticks. Direct
+`@path/to/file` mentions stay as compact prompt text so they do not eagerly
+paste file contents into the model context:
 >
   @file:`path with spaces.lua`
   @image:`assets/screenshot.png`
   @lua/coact/init.lua
 <
-The blink source completes paths after `@file:` and `@image:` using that
-backtick form. Its documentation window uses context-specific compact previews
-when available, including file contents, image attachment metadata, selections,
-diagnostics, and behavior diffs without necessarily showing the full submitted
-reference prompt. In insert mode, pressing TAB immediately after `@file:` opens
-`snacks.picker.files` when available, with |vim.ui.select()| only as a
-fallback; the selected file is inserted as direct `@path/to/file` syntax.
-`@image:` keeps the provider form
-because image inputs need image-specific attachment metadata. Custom hooks can
-be registered with `require("coact.context").register_hook(name, callback)`.
+The blink source intentionally does not complete filesystem paths after
+`@file:` or `@image:`. In insert mode, pressing TAB after those provider tokens
+opens the picker adapter: `snacks.picker.files` when available, with
+|vim.ui.select()| as a fallback. The selected file is inserted with a
+workspace-relative path: direct `@relative/path/to/file` syntax as a compact
+file mention, and `@image:relative/path/to/image.png` for image inputs because
+image inputs need image-specific attachment metadata. Use explicit
+`@file:relative/path` when you want Neovim to eagerly inject full file contents.
+Completion and hover documentation still use context-specific compact previews
+when available, including explicit file context, image attachment metadata,
+selections, diagnostics, and behavior diffs without necessarily showing the full
+submitted reference prompt.
+Custom hooks can be registered with
+`require("coact.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, coact.nvim remembers that source
 buffer as the thread target, so `@buffer`, `@selection`, `@cursor`,

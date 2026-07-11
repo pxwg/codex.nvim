@@ -2,7 +2,7 @@
 
 `coact.nvim` is a Neovim workspace for human-agent pair writing. It keeps the conversation, context, patch review, and branch navigation inside the editor, so coding agents become collaborators that propose, revise, and negotiate changes instead of unattended code generators.
 
-Provider threads are rendered as Neovim buffers, prompt tokens complete through `blink.cmp`, provider file changes become reviewable patch proposals, and pair-mode native `apply_patch` calls are reviewed and applied through Neovim before they touch the workspace.
+Provider threads are rendered as Neovim buffers, prompt tokens complete through `blink.cmp` with file-picking delegated to Neovim pickers, provider file changes become reviewable patch proposals, and pair-mode native `apply_patch` calls are reviewed and applied through Neovim before they touch the workspace.
 
 Built-in provider adapters currently include Codex app-server:
 
@@ -36,7 +36,7 @@ The provider layer keeps each backend protocol small and explicit while normaliz
   - `nvim.diagnostics`
   - `nvim.quickfix`
 - Source-buffer tracking so prompt context and Neovim tools target the buffer that opened the thread.
-- `blink.cmp` source where `$` comes from provider skills, `/` opens CLI-style slash commands, and `@` expands Neovim context.
+- `blink.cmp` source where `$` comes from provider skills, `/` opens CLI-style slash commands, and `@` expands Neovim context; `@file:`/`@image:` path selection opens picker integrations instead of blink path candidates.
 - Thread picker via `snacks.picker` when available, with `vim.ui.select` fallback.
 
 ## Requirements
@@ -223,7 +223,7 @@ Opening a provider thread starts in preview state with a read-only `coact-histor
 
 `:Coact attach` reruns the configured buffer attach hook for the current thread buffer. `:Coact attach all` reruns it for every loaded transcript or composer buffer. Use `buffer.on_attach = function(bufnr, payload) ... end` or `require("coact").on("buffer_attached", cb)` to attach editor-local helpers such as input-method LSP clients, formula concealers, or buffer-local keymaps after coact.nvim creates a chat buffer.
 
-`:Coact add-buffer` appends the current source buffer path to the active chat prompt using direct `@path` syntax. `:Coact add-selection` appends `@selection` when the source buffer has a remembered Visual selection.
+`:Coact add-buffer` appends the current source buffer path to the active chat prompt using compact direct `@path` mention syntax. `:Coact add-selection` appends `@selection` when the source buffer has a remembered Visual selection.
 
 Command-line completion covers subcommands, `attach all`, loaded chat buffer numbers, and loaded thread ids for `open`/`resume`.
 
@@ -237,7 +237,7 @@ Prompt token completions are available in the `coact-input` composer through the
 
 - `$skill:<name>` from the active provider's skill catalog where supported
 - `/model`, `/status`, and other active-provider slash commands handled by coact.nvim
-- `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@behavior`, `@file:`, `@image:`, and direct `@path/to/file`
+- `@buffer`, `@selection`, `@cursor`, `@diagnostics`, `@quickfix`, `@buffers`, `@cwd`, `@behavior`, `@file:`, `@image:`, and compact direct `@path/to/file` file mentions
 
 Configure `blink.cmp` with:
 
@@ -255,7 +255,7 @@ require("blink.cmp").setup({
 })
 ```
 
-`@...` tokens are expanded by Neovim into extra provider inputs. Argument providers use `@provider:input`; paths with spaces can wrap the path in backticks:
+Most `@...` context tokens are expanded by Neovim into extra provider inputs. Argument providers use `@provider:input`; paths with spaces can wrap the path in backticks. Direct `@path/to/file` mentions stay as compact prompt text so they do not eagerly paste file contents into the model context:
 
 ```text
 @file:`path with spaces.lua`
@@ -263,7 +263,7 @@ require("blink.cmp").setup({
 @lua/coact/init.lua
 ```
 
-The blink source completes paths after `@file:` and `@image:` using the same backtick form. Its documentation window uses context-specific compact previews when available, including file contents, image attachment metadata, selections, diagnostics, and behavior diffs without necessarily showing the full submitted reference prompt. In insert mode, pressing `<Tab>` immediately after `@file:` opens `snacks.picker.files` when available, with `vim.ui.select` only as a fallback; the selected file is inserted as direct `@path/to/file` syntax. `@image:` keeps the provider form because image inputs need image-specific attachment metadata. Custom hooks can be registered with `require("coact.context").register_hook(name, callback)`.
+The blink source intentionally does not complete filesystem paths after `@file:` or `@image:`. Instead, pressing `<Tab>` after those provider tokens opens the picker adapter (`snacks.picker.files` when available, with `vim.ui.select` as a fallback). The selected file is inserted with a workspace-relative path: `@relative/path/to/file` as a compact file mention, and `@image:relative/path/to/image.png` for image inputs. Use explicit `@file:relative/path` when you want Neovim to eagerly inject full file contents. Completion and hover documentation still use context-specific compact previews when available, including explicit file context, image attachment metadata, selections, diagnostics, and behavior diffs without necessarily showing the full submitted reference prompt. Custom hooks can be registered with `require("coact.context").register_hook(name, callback)`.
 
 When a thread is opened from another window, `coact.nvim` remembers that source buffer as the thread target, so `@buffer`, `@selection`, `@cursor`, `@diagnostics`, and Neovim dynamic tools do not accidentally read a Coact UI buffer itself. `@selection` remembers the last non-Coact Visual selection per source buffer, captures precise characterwise, linewise, or blockwise text from Neovim's visual marks and mode, and includes file/range metadata plus diagnostics in the selected range. Selection context is attached only when the prompt explicitly contains `@selection` or you run `:Coact add-selection`, keeping context injection fully controlled by the prompt. Expanded text contexts are sent before the user request and are labeled as reference context, not instructions; the user request remains the final text input for semantic priority. `@buffer` includes buffer id, path, filetype, cursor, modified state, line count, and buffer text. `$skill:<name>` is converted to the provider's skill invocation format when the provider exposes skills. Slash commands are handled locally before `turn/start`, so `/...` entries are not sent as model-visible tool calls; accepting a slash completion removes the typed prefix and opens that command's page or picker instead of inserting text. Slash completions and `/help` are filtered by the active provider, so Codex app-server-only pages such as `/permissions`, `/sandbox`, `/goal`, or `/experimental` do not appear when the Pi provider is active. Each slash command declares a return form (`page`, `select`, `notify`, `insert`, or `action`) and uses one presenter for Neovim rendering. Settings commands such as `/model`, `/fast`, `/permissions`, `/sandbox`, `/reasoning`, `/personality`, and `/experimental` open Neovim pickers backed by provider catalog responses where available and update the active thread where the provider supports it. `/model` also offers the selected model's advertised thinking-effort choices when the provider returns them. Legacy `>buffer`, `>diagnostics`, and `>quickfix` still parse as Neovim context aliases, but new completions use `@`.
 
@@ -342,7 +342,7 @@ Run the smoke test:
 nvim --headless -u NONE -c 'set rtp+=.' -l scripts/smoke.lua
 ```
 
-The smoke test loads the plugin, exercises health and status helpers, provider selection and Pi event normalization, parser/completion behavior, verifies source-buffer context tracking, checks `@file:` picker hooks and direct `@path` syntax, verifies patch-review hunk indexing, verifies Neovim-owned patch application and in-buffer changed-block rejection feedback, verifies provider initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
+The smoke test loads the plugin, exercises health and status helpers, provider selection and Pi event normalization, parser/completion behavior, verifies source-buffer context tracking, checks `@file:` picker hooks and compact direct `@path` mention syntax, verifies patch-review hunk indexing, verifies Neovim-owned patch application and in-buffer changed-block rejection feedback, verifies provider initialization and empty thread creation, and asserts that the TUI renderer creates extmarks, placeholders, fold levels, detail output, view-follow state, timeline/raw event blocks, process output blocks, and a busy spinner.
 
 ## License
 
