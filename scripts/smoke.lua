@@ -2568,6 +2568,46 @@ do
   assert(vim.fn.readfile(approve_comment_file)[1] == "new", "commented approval should still write accepted edit")
 end
 do
+  local cancelled_input_file = vim.fs.joinpath(session_dir, "cancelled-review-input.txt")
+  vim.fn.writefile({ "old" }, cancelled_input_file)
+  local cancelled_input_patch = table.concat({
+    "diff --git a/cancelled-review-input.txt b/cancelled-review-input.txt",
+    "--- a/cancelled-review-input.txt",
+    "+++ b/cancelled-review-input.txt",
+    "@@ -1 +1 @@",
+    "-old",
+    "+new",
+  }, "\n")
+  local cancelled_input_session = patch_session.open({
+    cwd = session_dir,
+    changes = dynamic_tools._changes_from_unified_patch(cancelled_input_patch),
+  })
+  local cancelled_input_block = cancelled_input_session.blocks[1]
+  local cancelled_prompts = {}
+  local original_input = vim.ui.input
+  vim.ui.input = function(opts, callback)
+    table.insert(cancelled_prompts, opts.prompt)
+    callback(nil)
+  end
+  for _, lhs in ipairs({ ".", ",", "ga", "gr", "q" }) do
+    local mapping = vim.fn.maparg(lhs, "n", false, true)
+    assert(type(mapping.callback) == "function", lhs .. " review key should be a Lua callback")
+    local callback_ok, callback_err = pcall(mapping.callback)
+    assert(callback_ok, callback_err)
+    assert(
+      not cancelled_input_session.completed and cancelled_input_block.status == nil,
+      "cancelling a review input should leave the current patch block pending"
+    )
+  end
+  vim.ui.input = original_input
+  assert(#cancelled_prompts == 5, "review actions that need text should all prompt for input")
+  patch_session._accept_block(cancelled_input_session, cancelled_input_block)
+  assert(
+    vim.fn.readfile(cancelled_input_file)[1] == "new",
+    "cancelled review inputs should leave the patch review usable"
+  )
+end
+do
   local previous_active_thread_id = require("coact.state").active_thread_id
   vim.cmd("tabnew")
   local codex_review_win = vim.api.nvim_get_current_win()

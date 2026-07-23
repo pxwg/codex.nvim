@@ -1510,6 +1510,9 @@ end
 
 local function prompt_reject(session, block)
   vim.ui.input({ prompt = "Why reject this Coact patch block? " }, function(reason)
+    if reason == nil then
+      return
+    end
     reject_block(session, block, reason)
   end)
 end
@@ -1537,6 +1540,9 @@ end
 
 local function reject_all(session)
   vim.ui.input({ prompt = "Why reject the remaining Coact patch blocks? " }, function(reason)
+    if reason == nil then
+      return
+    end
     local pending = pending_blocks(session)
     for _, block in ipairs(pending) do
       reject_block_without_finish(block, reason)
@@ -1547,6 +1553,9 @@ end
 
 local function cancel(session)
   vim.ui.input({ prompt = "Why cancel this Coact patch review? " }, function(reason)
+    if reason == nil then
+      return
+    end
     local pending = pending_blocks(session)
     for _, block in ipairs(pending) do
       reject_block_without_finish(block, reason or "patch review cancelled")
