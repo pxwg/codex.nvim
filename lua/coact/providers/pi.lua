@@ -27,18 +27,25 @@ local M = {
     },
     reasoning_label = "thinking",
     reasoning_effort_title = "thinking level",
-    reasoning_efforts = {
-      { label = "default", value = vim.NIL },
-      { label = "off", value = "off" },
-      { label = "minimal", value = "minimal" },
-      { label = "low", value = "low" },
-      { label = "medium", value = "medium" },
-      { label = "high", value = "high" },
-      { label = "xhigh", value = "xhigh" },
-    },
+    load_reasoning_efforts = function(rpc, callback)
+      rpc.request("get_available_thinking_levels", {}, function(err, result)
+        if err then
+          callback(err, nil)
+          return
+        end
+        local choices = {}
+        for _, level in ipairs(type(result) == "table" and result.levels or {}) do
+          level = util.value(level)
+          if type(level) == "string" and level ~= "" then
+            table.insert(choices, { label = level, value = level })
+          end
+        end
+        callback(nil, choices)
+      end)
+    end,
     reasoning_summaries = false,
     return_forms = {
-      reasoning = "select(Pi thinking level) -> notify(set_thinking_level)",
+      reasoning = "select(get_available_thinking_levels) -> notify(set_thinking_level)",
       skills = "select(get_commands source=skill) -> insert($skill:<name>)",
       status = "page(get_state + get_session_stats + local thread status)",
       tree = "select(Pi session tree) -> reveal locally or notify(thread/tree) -> refresh thread",
@@ -72,6 +79,12 @@ local thinking_levels = {
   "medium",
   "high",
   "xhigh",
+  "max",
+}
+
+local extended_thinking_levels = {
+  xhigh = true,
+  max = true,
 }
 
 local image_mime_by_ext = {
@@ -1050,15 +1063,27 @@ local function parse_model(value)
   return cfg_provider, value
 end
 
+local function supported_thinking_efforts(model)
+  local supported = {}
+  if model.reasoning ~= true then
+    return supported
+  end
+  local level_map = type(model.thinkingLevelMap) == "table" and model.thinkingLevelMap or {}
+  for _, level in ipairs(thinking_levels) do
+    local mapped = level_map[level]
+    local available = mapped ~= vim.NIL and (not extended_thinking_levels[level] or mapped ~= nil)
+    if available then
+      table.insert(supported, { effort = level })
+    end
+  end
+  return supported
+end
+
 local function normalize_model(model)
   model = type(model) == "table" and model or {}
   local id = model_id(model) or util.value(model.id) or util.value(model.model)
   if not id then
     return nil
-  end
-  local supported = {}
-  for _, level in ipairs(thinking_levels) do
-    table.insert(supported, { effort = level })
   end
   return {
     id = id,
@@ -1067,8 +1092,8 @@ local function normalize_model(model)
     displayName = util.value(model.name) or id,
     description = util.value(model.description),
     contextWindow = util.value(model.contextWindow),
-    supportedReasoningEfforts = supported,
-    defaultReasoningEffort = "medium",
+    supportedReasoningEfforts = supported_thinking_efforts(model),
+    defaultReasoningEffort = util.value(model.defaultReasoningEffort),
     serviceTiers = {},
   }
 end

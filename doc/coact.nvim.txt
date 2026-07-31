@@ -190,10 +190,12 @@ To use Pi as the active provider:
 The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to
 Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
 commands, and normalizes Pi streaming, thinking, and tool events into the same
-renderer blocks used by the rest of coact.nvim. Submitting another prompt while
-Pi is generating queues it as a Pi `followUp` instead of failing with "Agent is
-already processing"; the queued prompt remains visible until Pi starts that
-turn. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary
+renderer blocks used by the rest of coact.nvim. `/reasoning` queries Pi for the
+current model's available thinking levels when the picker opens, so
+model-declared holes and extended levels such as `max` are honored. Submitting
+another prompt while Pi is generating queues it as a Pi `followUp` instead of
+failing with "Agent is already processing"; the queued prompt remains visible
+until Pi starts that turn. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary
 Pi extension into only the Pi process started by coact.nvim. That extension
 overrides Pi's built-in
 `edit` and `write` tools,
@@ -293,7 +295,8 @@ Settings commands such as `/model`, `/fast`,
 open Neovim pickers backed by provider catalog responses where available and
 update the active thread where the provider supports it. `/model` also offers
 the selected model's advertised thinking-effort choices when the provider
-returns them.
+returns them. With Pi, `/reasoning` loads the current model's supported levels
+from `get_available_thinking_levels` at picker time.
 
 Most `@...` candidates are Neovim context shortcuts. They expand into
 additional provider inputs before the turn is sent. Argument providers use

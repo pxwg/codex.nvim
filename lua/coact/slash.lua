@@ -919,8 +919,7 @@ local function provider_reasoning_summary_title()
   return provider_slash().reasoning_summary_title or (provider_reasoning_label() .. " summary")
 end
 
-local function open_reasoning(actions, thread_id)
-  local efforts = provider_choice_table("reasoning_efforts", default_reasoning_efforts)
+local function reasoning_result(efforts, actions, thread_id)
   return select_result({
     title = provider_title() .. " " .. provider_reasoning_effort_title(),
     items = efforts,
@@ -958,6 +957,31 @@ local function open_reasoning(actions, thread_id)
       })
     end,
   })
+end
+
+local function open_reasoning(actions, thread_id)
+  local loader = provider_slash().load_reasoning_efforts
+  if type(loader) ~= "function" then
+    return reasoning_result(provider_choice_table("reasoning_efforts", default_reasoning_efforts), actions, thread_id)
+  end
+  ensure_server(actions, function()
+    loader(rpc, function(err, efforts)
+      if err then
+        present_result(
+          notify_result(
+            ("%s %s discovery failed: %s"):format(
+              provider_title(),
+              provider_reasoning_effort_title(),
+              tostring(type(err) == "table" and err.message or err)
+            ),
+            vim.log.levels.ERROR
+          )
+        )
+        return
+      end
+      present_result(reasoning_result(as_table(efforts), actions, thread_id))
+    end)
+  end)
 end
 
 local function open_personality(actions, thread_id)

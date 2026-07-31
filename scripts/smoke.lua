@@ -671,6 +671,27 @@ do
   })
   assert(pi_thread.id == "pi:smoke-session", "Pi session state should normalize to a thread id")
   assert(pi_thread.model == "openai/gpt-4o", "Pi model state should normalize provider/model")
+  local pi_max_model = pi_provider._normalize_model({
+    provider = "openai",
+    id = "gpt-5.6-sol",
+    reasoning = true,
+    thinkingLevelMap = {
+      off = "none",
+      minimal = vim.NIL,
+      low = "low",
+      medium = "medium",
+      high = "high",
+      xhigh = vim.NIL,
+      max = "max",
+    },
+  })
+  local pi_max_model_efforts = vim.tbl_map(function(option)
+    return option.effort
+  end, pi_max_model.supportedReasoningEfforts)
+  assert(
+    vim.deep_equal(pi_max_model_efforts, { "off", "low", "medium", "high", "max" }),
+    "Pi model normalization should honor thinkingLevelMap holes and max support"
+  )
   local pi_prompt = pi_provider._prompt_from_input({
     { type = "text", text = "hello" },
     { type = "skill", name = "smoke" },
@@ -3461,11 +3482,16 @@ do
     )
 
     local pi_reasoning_prompts = {}
+    local pi_reasoning_choices = nil
+    local pi_reasoning_requests = {}
     local pi_reasoning_update = nil
     vim.ui.select = function(items, opts, callback)
       table.insert(pi_reasoning_prompts, opts.prompt)
+      pi_reasoning_choices = vim.tbl_map(function(item)
+        return item.label
+      end, items)
       for _, item in ipairs(items) do
-        if item.label == "high" then
+        if item.label == "max" then
           callback(item)
           return
         end
@@ -3473,7 +3499,12 @@ do
       callback(nil)
     end
     rpc.request = function(method, params, callback)
-      assert(method == "thread/settings/update", "Pi /reasoning should update thread settings only")
+      table.insert(pi_reasoning_requests, method)
+      if method == "get_available_thinking_levels" then
+        callback(nil, { levels = { "off", "low", "medium", "high", "xhigh", "max" } })
+        return
+      end
+      assert(method == "thread/settings/update", "Pi /reasoning should update thread settings")
       pi_reasoning_update = params
       callback(nil, {})
     end
@@ -3488,8 +3519,16 @@ do
       vim.deep_equal(pi_reasoning_prompts, { "Pi thinking level" }),
       "Pi /reasoning should prompt for thinking only"
     )
+    assert(
+      vim.deep_equal(pi_reasoning_requests, { "get_available_thinking_levels", "thread/settings/update" }),
+      "Pi /reasoning should discover current-model thinking levels before updating settings"
+    )
+    assert(
+      vim.deep_equal(pi_reasoning_choices, { "off", "low", "medium", "high", "xhigh", "max" }),
+      "Pi /reasoning should use Pi's dynamic current-model thinking levels"
+    )
     assert(pi_reasoning_update.threadId == "pi-thread-reasoning", "Pi /reasoning should target the active thread")
-    assert(pi_reasoning_update.effort == "high", "Pi /reasoning should send the selected thinking level")
+    assert(pi_reasoning_update.effort == "max", "Pi /reasoning should send the selected max thinking level")
     assert(pi_reasoning_update.summary == nil, "Pi /reasoning should not send Codex reasoning summary")
 
     local pi_tree_request = nil
