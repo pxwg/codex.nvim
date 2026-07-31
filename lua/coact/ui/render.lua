@@ -1414,15 +1414,49 @@ local function final_assistant_block(block)
   return block.state ~= "commentary"
 end
 
-local function compactable_turn_ids(_, blocks)
-  local ids = {}
+local function completed_activity_groups(blocks)
+  local groups = {}
+  local groups_by_turn = {}
+  local group_by_block = {}
+  local current = nil
+
+  local function start_group()
+    local group = {
+      children = {},
+      final = nil,
+    }
+    table.insert(groups, group)
+    current = group
+    return group
+  end
+
   for _, block in ipairs(blocks or {}) do
     local turn_id = util.value(block.message_id)
-    if turn_id and final_assistant_block(block) then
-      ids[turn_id] = true
+    local group = turn_id and groups_by_turn[turn_id] or nil
+    if block.type == "UserBlock" then
+      group = start_group()
+      if turn_id then
+        groups_by_turn[turn_id] = group
+      end
+    elseif not group and turn_id and block.local_only ~= true then
+      -- Pi may use several backend turn ids for one user/assistant run. Only
+      -- ordered provider blocks extend it; appended local blocks must refer
+      -- to an id that was already assigned.
+      group = current or start_group()
+      groups_by_turn[turn_id] = group
+    end
+
+    if group then
+      group_by_block[block] = group
+      if activity_summary_types[block.type] then
+        table.insert(group.children, block)
+      elseif final_assistant_block(block) then
+        group.final = block
+      end
     end
   end
-  return ids
+
+  return groups, group_by_block
 end
 
 local function activity_summary_block(turn_id, children)
@@ -1440,28 +1474,26 @@ local function activity_summary_block(turn_id, children)
   }
 end
 
-local function compact_completed_activity(thread, blocks)
-  local compactable = compactable_turn_ids(thread, blocks)
-  local children_by_turn = {}
-  for _, block in ipairs(blocks or {}) do
-    local turn_id = util.value(block.message_id)
-    if turn_id and compactable[turn_id] and activity_summary_types[block.type] then
-      children_by_turn[turn_id] = children_by_turn[turn_id] or {}
-      table.insert(children_by_turn[turn_id], block)
+local function compact_completed_activity(_, blocks)
+  local groups, group_by_block = completed_activity_groups(blocks)
+  local compactable = {}
+  for _, group in ipairs(groups) do
+    if group.final and #group.children > 0 then
+      compactable[group] = true
     end
   end
 
   local out = {}
   local emitted = {}
   for _, block in ipairs(blocks or {}) do
-    local turn_id = util.value(block.message_id)
-    if turn_id and compactable[turn_id] and activity_summary_types[block.type] then
-      -- Hold intermediate activity until the final answer, so the summary
-      -- separates progress commentary from the user-facing result.
-    elseif turn_id and compactable[turn_id] and final_assistant_block(block) then
-      if not emitted[turn_id] and children_by_turn[turn_id] and #children_by_turn[turn_id] > 0 then
-        table.insert(out, activity_summary_block(turn_id, children_by_turn[turn_id]))
-        emitted[turn_id] = true
+    local group = group_by_block[block]
+    if group and compactable[group] and activity_summary_types[block.type] then
+      -- Hold all activity in this user/assistant run until its last visible
+      -- answer. Pi can span one run across several internal turn ids.
+    elseif group and compactable[group] and block == group.final then
+      if not emitted[group] then
+        table.insert(out, activity_summary_block(group.final.message_id, group.children))
+        emitted[group] = true
       end
       table.insert(out, block)
     else

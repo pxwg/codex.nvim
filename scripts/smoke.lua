@@ -4109,6 +4109,87 @@ coact.setup();
     "activity summary detail should preserve child details"
   )
 
+  local split_activity_thread = state.ensure_thread("smoke-split-activity", {
+    title = "Smoke split activity",
+    cwd = vim.fn.getcwd(),
+    generation = "idle",
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-1", {
+    id = "split-user",
+    type = "userMessage",
+    content = { { type = "text", text = "inspect the project" } },
+    status = "completed",
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-1", {
+    id = "split-reasoning-1",
+    type = "reasoning",
+    content = { "inspect before using tools" },
+    status = "completed",
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-1", {
+    id = "split-progress",
+    type = "agentMessage",
+    text = "I found the relevant files.",
+    status = "completed",
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-1", {
+    id = "split-tool",
+    type = "commandExecution",
+    command = "rg activity",
+    cwd = vim.fn.getcwd(),
+    status = "completed",
+    aggregatedOutput = "activity match",
+    exitCode = 0,
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-2", {
+    id = "split-reasoning-2",
+    type = "reasoning",
+    content = { "compose the final answer" },
+    status = "completed",
+  })
+  state.upsert_item("smoke-split-activity", "turn-split-2", {
+    id = "split-final",
+    type = "agentMessage",
+    text = "split final answer",
+    status = "completed",
+  })
+  local split_blocks = render.select_render_tree(split_activity_thread)
+  local split_summary = nil
+  local split_progress_index = nil
+  local split_summary_index = nil
+  local split_final_index = nil
+  local split_standalone_activity = 0
+  for index, block in ipairs(split_blocks) do
+    if block.type == "ActivitySummaryBlock" then
+      split_summary = block
+      split_summary_index = index
+    elseif block.type == "ReasoningBlock" or block.type == "ToolCallBlock" then
+      split_standalone_activity = split_standalone_activity + 1
+    elseif block.type == "AssistantBlock" and block.text == "I found the relevant files." then
+      split_progress_index = index
+    elseif block.type == "AssistantBlock" and block.text == "split final answer" then
+      split_final_index = index
+    end
+  end
+  assert(split_summary ~= nil, "activity split across provider turn ids should still produce a summary")
+  assert(
+    split_summary.children and #split_summary.children == 3,
+    "split activity summary should collect every reasoning and tool block in the run"
+  )
+  assert(split_standalone_activity == 0, "split activity should not leave standalone extmark placeholders")
+  assert(
+    split_progress_index < split_summary_index and split_summary_index < split_final_index,
+    "split activity summary should appear after progress and before the last visible answer"
+  )
+  local split_activity_buf = vim.api.nvim_create_buf(false, true)
+  state.bind_buffer(split_activity_thread, split_activity_buf)
+  render.render(split_activity_thread)
+  assert(
+    #split_activity_thread.placeholder_marks == 1
+      and split_activity_thread.placeholder_marks[1].block.type == "ActivitySummaryBlock",
+    "completed split activity should render as one clustered extmark"
+  )
+
   local busy_activity_thread = state.ensure_thread("smoke-busy-activity", {
     title = "Smoke busy activity",
     cwd = vim.fn.getcwd(),
