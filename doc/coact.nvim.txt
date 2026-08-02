@@ -89,6 +89,12 @@ Default options:
           enabled = true,
           timeout_sec = 600,
         },
+        nvim_tools = {
+          enabled = true,
+          max_code_bytes = 64 * 1024,
+          max_result_bytes = 50 * 1024,
+          max_result_lines = 2000,
+        },
       },
     },
     thread = {
@@ -182,6 +188,9 @@ To use Pi as the active provider:
           enabled = true,
           timeout_sec = 600,
         },
+        nvim_tools = {
+          enabled = true,
+        },
       },
     },
   })
@@ -195,13 +204,28 @@ current model's available thinking levels when the picker opens, so
 model-declared holes and extended levels such as `max` are honored. Submitting
 another prompt while Pi is generating queues it as a Pi `followUp` instead of
 failing with "Agent is already processing"; the queued prompt remains visible
-until Pi starts that turn. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary
-Pi extension into only the Pi process started by coact.nvim. That extension
-overrides Pi's built-in
-`edit` and `write` tools,
-turns them into Neovim-reviewed file-change proposals, and then lets the
-existing in-buffer patch review write accepted hunks. It does not install or
-modify user Pi extensions or settings.
+until Pi starts that turn.
+
+When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi
+extension that registers `nvim_exec_lua`. The tool runs with the thread's
+remembered source window or buffer temporarily current. Lua chunks can start
+with `local ctx, args = ...`, use `vim.cmd`, `vim.api`, `vim.fn`, or plugin Lua
+APIs, and return one JSON-serializable value. Calls are serialized. Results
+larger than `max_result_bytes` or `max_result_lines` are saved as JSON in a
+temporary file. If `providers.pi.tools` is an explicit allowlist, include
+`nvim_exec_lua` to activate it.
+
+`nvim_exec_lua` has full access to the live editor, including unsaved buffers,
+file writes, shell-capable Ex commands, and editor shutdown. Routine workspace
+file changes should continue through the reviewed `edit` and `write` tools. Set
+`nvim_tools.enabled = false` when this capability should not be exposed.
+
+In pair edit mode, `edit_bridge.enabled` dynamically injects a separate
+temporary Pi extension into only the Pi process started by coact.nvim. That
+extension overrides Pi's built-in `edit` and `write` tools, turns them into
+Neovim-reviewed file-change proposals, and then lets the existing in-buffer
+patch review write accepted hunks. Neither injected extension installs or
+modifies user Pi extensions or settings.
 
 ==============================================================================
 COMMANDS                                               *coact.nvim-commands*

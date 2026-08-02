@@ -423,6 +423,24 @@ do
       and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS,
     "Pi edit bridge should pass runtime connection details through env vars"
   )
+  local pi_nvim_bridge = require("coact.providers.pi_nvim_bridge")
+  assert(pi_nvim_bridge.enabled(), "Pi provider should expose the Neovim Lua bridge by default")
+  assert(prepared_pi_env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE, "Pi Neovim Lua bridge should pass a process-local nonce")
+  local injected_extension_count = 0
+  for _, part in ipairs(prepared_pi_command) do
+    if part == "--extension" then
+      injected_extension_count = injected_extension_count + 1
+    end
+  end
+  assert(injected_extension_count == 2, "Pi should inject separate edit-review and Neovim Lua extensions")
+  local pi_nvim_extension_source = pi_nvim_bridge._extension_source()
+  assert(
+    pi_nvim_extension_source:match('name: "nvim_exec_lua"')
+      and pi_nvim_extension_source:match("__coactNvimExecLua")
+      and pi_nvim_extension_source:match("local ctx, args = %.%.%.")
+      and pi_nvim_extension_source:match('executionMode: "sequential"'),
+    "Pi Neovim bridge extension should register the serialized nvim_exec_lua tool"
+  )
   local pi_extension_source = pi_bridge._extension_source()
   assert(
     pi_extension_source:match('name: "edit"') and pi_extension_source:match('name: "write"'),
@@ -886,6 +904,78 @@ do
         and pi_ui_sent[1].value == "second",
       "Pi extension select should respond with the selected value"
     )
+    local nvim_exec_bufnr = vim.api.nvim_create_buf(true, false)
+    vim.api.nvim_buf_set_name(nvim_exec_bufnr, vim.fs.joinpath(pi_temp, "nvim-exec-source.lua"))
+    vim.api.nvim_buf_set_lines(nvim_exec_bufnr, 0, -1, false, { "return 'source'" })
+    pi_state_thread.context_bufnr = nvim_exec_bufnr
+    pi_state_thread.context_winid = nil
+    local nvim_exec_response_count = #pi_ui_sent
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-nvim-exec-smoke",
+        method = "select",
+        title = "coact.nvim nvim_exec_lua",
+        options = {
+          {
+            __coactNvimExecLua = true,
+            version = 1,
+            nonce = prepared_pi_env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE,
+            code = table.concat({
+              "local ctx, args = ...",
+              "vim.b[ctx.bufnr].coact_nvim_exec_smoke = args.value",
+              "vim.cmd([[let b:coact_nvim_exec_cmd_smoke = 'from-vim-cmd']])",
+              "return { bufnr = ctx.bufnr, current = vim.api.nvim_get_current_buf(), value = args.value, cmd = vim.b.coact_nvim_exec_cmd_smoke }",
+            }, "\n"),
+            args = { value = "from-pi" },
+          },
+        },
+      }, pi_ui_rpc),
+      "Pi provider should handle nvim_exec_lua host requests"
+    )
+    vim.wait(1000, function()
+      return #pi_ui_sent == nvim_exec_response_count + 1
+    end, 10)
+    local nvim_exec_response = pi_ui_sent[#pi_ui_sent]
+    local nvim_exec_result = nvim_exec_response and nvim_exec_response.value
+    assert(
+      nvim_exec_response
+        and nvim_exec_response.type == "extension_ui_response"
+        and nvim_exec_response.id == "pi-nvim-exec-smoke"
+        and nvim_exec_result.__coactNvimExecLuaResult == true
+        and nvim_exec_result.ok == true
+        and nvim_exec_result.value.bufnr == nvim_exec_bufnr
+        and nvim_exec_result.value.current == nvim_exec_bufnr
+        and nvim_exec_result.value.value == "from-pi"
+        and nvim_exec_result.value.cmd == "from-vim-cmd"
+        and nvim_exec_result.target.before.bufnr == nvim_exec_bufnr
+        and vim.b[nvim_exec_bufnr].coact_nvim_exec_smoke == "from-pi",
+      "nvim_exec_lua should execute inside the thread source buffer and return structured JSON"
+    )
+    local invalid_nonce_result = pi_nvim_bridge.execute_request({
+      __coactNvimExecLua = true,
+      version = 1,
+      nonce = "invalid",
+      code = "return true",
+    }, { thread_id = "pi:smoke-session" })
+    assert(
+      invalid_nonce_result.__coactNvimExecLuaResult == true
+        and invalid_nonce_result.ok == false
+        and invalid_nonce_result.error:match("invalid Neovim bridge nonce"),
+      "nvim_exec_lua should reject requests outside the injected bridge"
+    )
+    local non_serializable_result = pi_nvim_bridge.execute_request({
+      __coactNvimExecLua = true,
+      version = 1,
+      nonce = prepared_pi_env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE,
+      code = "return function() end",
+    }, { thread_id = "pi:smoke-session" })
+    assert(
+      non_serializable_result.ok == false and non_serializable_result.error:match("JSON%-serializable"),
+      "nvim_exec_lua should reject non-serializable return values"
+    )
+    vim.api.nvim_buf_delete(nvim_exec_bufnr, { force = true })
+    pi_state_thread.context_bufnr = nil
     local saved_snapshot_runtime_thread_id = pi_provider._runtime.current_thread_id
     pi_provider._runtime.current_thread_id = "pi:branch-snapshot-smoke"
     local snapshot_thread = state.ensure_thread("pi:branch-snapshot-smoke")
@@ -1541,10 +1631,39 @@ do
     },
   })
   assert(not pi_bridge.enabled(), "Pi edit bridge should respect the provider disable switch")
+  assert(pi_nvim_bridge.enabled(), "Pi Neovim bridge should remain independent from pair edit review")
+  local nvim_only_command, nvim_only_env = pi_provider.prepare_command({ "pi", "--mode", "rpc" }, {})
+  local nvim_only_extension_count = 0
+  for _, part in ipairs(nvim_only_command) do
+    if part == "--extension" then
+      nvim_only_extension_count = nvim_only_extension_count + 1
+    end
+  end
+  assert(
+    nvim_only_extension_count == 1
+      and nvim_only_env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE
+      and not nvim_only_env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR,
+    "Pi should inject nvim_exec_lua without enabling the edit-review bridge"
+  )
+  coact.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        edit_bridge = {
+          enabled = false,
+        },
+        nvim_tools = {
+          enabled = false,
+        },
+      },
+    },
+  })
+  assert(not pi_bridge.enabled(), "Pi edit bridge should stay disabled")
+  assert(not pi_nvim_bridge.enabled(), "Pi Neovim bridge should respect the provider disable switch")
   local disabled_command = pi_provider.prepare_command({ "pi", "--mode", "rpc" }, {})
   assert(
     not vim.tbl_contains(disabled_command, "--extension"),
-    "disabled Pi edit bridge should not inject an extension"
+    "disabled Pi process-local bridges should not inject extensions"
   )
   coact.setup()
 end

@@ -28,6 +28,12 @@ local defaults = {
         enabled = true,
         timeout_sec = 600,
       },
+      nvim_tools = {
+        enabled = true,
+        max_code_bytes = 64 * 1024,
+        max_result_bytes = 50 * 1024,
+        max_result_lines = 2000,
+      },
     },
   },
   thread = {

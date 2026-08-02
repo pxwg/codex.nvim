@@ -202,6 +202,10 @@ end
 function M.prepare_command(command, env)
   local err
   command, env, err = require("coact.providers.pi_edit_bridge").prepare_command(command, env)
+  if not command then
+    return nil, env, err
+  end
+  command, env, err = require("coact.providers.pi_nvim_bridge").prepare_command(command, env)
   if command then
     command = without_host_nvim_env(command)
   end
@@ -2032,6 +2036,16 @@ function M.handle_raw_message(message, rpc)
     return true
   end
   if message.method == "select" then
+    local bridge_ok, nvim_bridge = pcall(require, "coact.providers.pi_nvim_bridge")
+    if bridge_ok and nvim_bridge.is_request(message) then
+      vim.schedule(function()
+        local result = nvim_bridge.handle_request(message, {
+          thread_id = runtime.current_thread_id or current_thread_id(),
+        })
+        extension_response(rpc, message, { value = result })
+      end)
+      return true
+    end
     if branch_snapshot_request(message) then
       handle_branch_snapshot_request(message, rpc)
       return true

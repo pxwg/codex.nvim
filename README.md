@@ -91,6 +91,16 @@ require("coact").setup({
       tools = nil,
       exclude_tools = nil,
       extra_args = {},
+      edit_bridge = {
+        enabled = true,
+        timeout_sec = 600,
+      },
+      nvim_tools = {
+        enabled = true,
+        max_code_bytes = 64 * 1024,
+        max_result_bytes = 50 * 1024,
+        max_result_lines = 2000,
+      },
     },
   },
   thread = {
@@ -188,12 +198,21 @@ require("coact").setup({
         enabled = true,
         timeout_sec = 600,
       },
+      nvim_tools = {
+        enabled = true,
+      },
     },
   },
 })
 ```
 
-The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to Pi `prompt` commands, maps `/model` and reasoning changes to Pi model/thinking commands, and normalizes Pi streaming, thinking, and tool events into the same renderer blocks used by the rest of coact.nvim. `/reasoning` queries Pi for the current model's available thinking levels when the picker opens, so model-declared holes and extended levels such as `max` are honored. Submitting another prompt while Pi is generating queues it as a Pi `followUp` instead of failing with "Agent is already processing"; the queued prompt remains visible until Pi starts that turn. Pi extension UI status requests (`ctx.ui.setStatus`, `setWidget`, and `setTitle`) are mirrored into window status chrome so Pi-side status customizations remain visible in Neovim without overloading the split separator or input box. In pair edit mode, `edit_bridge.enabled` dynamically injects a temporary Pi extension into only the Pi process started by coact.nvim. That extension overrides Pi's built-in `edit` and `write` tools, turns them into Neovim-reviewed file-change proposals, and then lets the existing in-buffer patch review write accepted hunks. It does not install or modify user Pi extensions or settings.
+The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to Pi `prompt` commands, maps `/model` and reasoning changes to Pi model/thinking commands, and normalizes Pi streaming, thinking, and tool events into the same renderer blocks used by the rest of coact.nvim. `/reasoning` queries Pi for the current model's available thinking levels when the picker opens, so model-declared holes and extended levels such as `max` are honored. Submitting another prompt while Pi is generating queues it as a Pi `followUp` instead of failing with "Agent is already processing"; the queued prompt remains visible until Pi starts that turn. Pi extension UI status requests (`ctx.ui.setStatus`, `setWidget`, and `setTitle`) are mirrored into window status chrome so Pi-side status customizations remain visible in Neovim without overloading the split separator or input box.
+
+When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi extension that registers `nvim_exec_lua`. The tool executes Lua with the thread's remembered source window or buffer temporarily current. Its chunk can begin with `local ctx, args = ...`, use `vim.cmd`, `vim.api`, `vim.fn`, or plugin Lua APIs, and return one JSON-serializable value. Calls are serialized, and results larger than `max_result_bytes` or `max_result_lines` are written as JSON to a temporary file. If `providers.pi.tools` is an explicit allowlist, include `nvim_exec_lua` to activate it.
+
+`nvim_exec_lua` is a full-trust escape hatch into the live editor: it can read unsaved buffers, mutate editor state, write files, run shell-capable Ex commands, or close Neovim. Routine workspace file changes should continue to use the reviewed `edit` and `write` tools. Set `nvim_tools.enabled = false` when that live-editor capability should not be exposed.
+
+In pair edit mode, `edit_bridge.enabled` dynamically injects a separate temporary Pi extension into only the Pi process started by coact.nvim. That extension overrides Pi's built-in `edit` and `write` tools, turns them into Neovim-reviewed file-change proposals, and then lets the existing in-buffer patch review write accepted hunks. Neither injected extension installs or modifies user Pi extensions or settings.
 
 ## Commands
 
@@ -318,7 +337,7 @@ Approval comments, rejected changed-block reasons, partial-apply status, final f
 The plugin follows the same shape as a native Neovim chat client:
 
 - `lua/coact/rpc.lua`: provider-driven stdio JSONL client.
-- `lua/coact/providers/`: provider adapters for Codex app-server and Pi RPC.
+- `lua/coact/providers/`: provider adapters for Codex app-server and Pi RPC, including the process-local Pi `nvim_exec_lua` bridge.
 - `lua/coact/state.lua`: thread, turn, item, pending-request, render-index, expansion, view, timeline/raw, and cache state.
 - `lua/coact/core.lua`: provider notification and server-request reducer; maps normalized lifecycle events to UI generation states and timeline/raw blocks.
 - `lua/coact/context.lua`: source-buffer tracking for prompt context and Neovim dynamic tools.
