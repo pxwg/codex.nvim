@@ -482,9 +482,13 @@ The block types include:
 Headers keep markdown heading lines in the transcript buffer and render compact
 role labels through overlay extmarks; header metadata is right-aligned with
 extmarks. Reasoning/tool/patch/agent blocks are placeholders with virtual body
-lines. Busy turns show a spinner whose label follows the current generation
-state: thinking, reasoning, streaming, tooling, patch review, syncing, or
-stopping.
+lines. One user run keeps a single assistant response frame across provider
+turn ids. Activity before each visible output compacts into a collapsed
+`Thinking finished` row, while activity after partial output remains live until
+the next output boundary. This preserves folded activity -> output -> folded
+activity -> output chronology. Busy turns show a spinner whose label follows
+the current generation state: thinking, reasoning, streaming, tooling, patch
+review, syncing, or stopping.
 
 The renderer tracks per-window view state. A transcript window near the bottom
 follows the conversation while the active provider streams. Cursor movement or scrolling away

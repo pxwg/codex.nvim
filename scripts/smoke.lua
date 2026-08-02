@@ -4161,6 +4161,16 @@ assert(
 )
 coact.setup();
 (function()
+  local function count_line(lines, expected)
+    local count = 0
+    for _, line in ipairs(lines or {}) do
+      if line == expected then
+        count = count + 1
+      end
+    end
+    return count
+  end
+
   local final_compact_thread = state.ensure_thread("smoke-final-activity", {
     title = "Smoke final activity",
     cwd = vim.fn.getcwd(),
@@ -4206,16 +4216,15 @@ coact.setup();
     },
   }
   local final_blocks = render.select_render_tree(final_compact_thread)
-  local summary_block = nil
+  local final_summaries = {}
+  local final_summary_indexes = {}
   local standalone_activity = 0
-  local assistant_seen = false
   local commentary_index = nil
-  local summary_index = nil
   local final_index = nil
   for index, block in ipairs(final_blocks) do
     if block.type == "ActivitySummaryBlock" then
-      summary_block = block
-      summary_index = index
+      table.insert(final_summaries, block)
+      table.insert(final_summary_indexes, index)
     elseif
       block.type == "ReasoningBlock"
       or block.type == "ToolCallBlock"
@@ -4227,44 +4236,55 @@ coact.setup();
     elseif block.type == "AssistantBlock" and block.state == "commentary" then
       commentary_index = index
     elseif block.type == "AssistantBlock" and block.text == "final answer" then
-      assistant_seen = true
       final_index = index
     end
   end
-  assert(summary_block ~= nil, "completed assistant turns should compact activity into one summary block")
-  assert(assistant_seen, "completed activity compaction should keep the final assistant answer visible")
-  assert(commentary_index ~= nil, "completed activity compaction should keep commentary visible")
+  assert(#final_summaries == 2, "each completed output segment should receive its own activity summary")
+  assert(commentary_index ~= nil, "activity compaction should keep commentary visible")
+  assert(final_index ~= nil, "activity compaction should keep the final assistant answer visible")
   assert(
-    commentary_index < summary_index and summary_index < final_index,
-    "completed activity summary should separate commentary from final answer"
+    final_summary_indexes[1] < commentary_index
+      and commentary_index < final_summary_indexes[2]
+      and final_summary_indexes[2] < final_index,
+    "completed activity summaries should preserve folded/output/folded/output chronology"
   )
   assert(standalone_activity == 0, "completed activity compaction should hide standalone reasoning/tool/agent rows")
   assert(
-    summary_block.children and #summary_block.children == 3,
-    "completed activity summary should retain reasoning, tool, and agent timeline children"
+    #final_summaries[1].children == 2 and #final_summaries[2].children == 1,
+    "completed output segments should retain their own reasoning, tool, and timeline children"
   )
-  assert(summary_block.text == nil, "completed activity summary should lazily render child details")
+  assert(
+    final_summaries[1].text == nil and final_summaries[2].text == nil,
+    "activity summaries should lazily render child details"
+  )
   local final_compact_buf = vim.api.nvim_create_buf(false, true)
   state.bind_buffer(final_compact_thread, final_compact_buf)
   render.render(final_compact_thread)
   local final_compact_lines = vim.api.nvim_buf_get_lines(final_compact_buf, 0, -1, false)
   assert(vim.tbl_contains(final_compact_lines, "final answer"), "completed activity render should show final answer")
   assert(
-    final_compact_thread.placeholder_marks[1]
+    count_line(final_compact_lines, "## Coact") == 1,
+    "segmented activity and outputs should render inside one assistant response frame"
+  )
+  assert(
+    #final_compact_thread.placeholder_marks == 2
       and final_compact_thread.placeholder_marks[1].block.type == "ActivitySummaryBlock"
-      and final_compact_thread.placeholder_marks[1].title == "Thinking finished",
-    "completed activity render should expose one collapsed thinking-finished row"
+      and final_compact_thread.placeholder_marks[2].block.type == "ActivitySummaryBlock"
+      and final_compact_thread.placeholder_marks[1].title == "Thinking finished"
+      and final_compact_thread.placeholder_marks[2].title == "Thinking finished",
+    "completed output segments should render as collapsed thinking-finished rows"
   )
-  local final_detail_lines = require("coact.ui.detail").lines_for(summary_block)
+  local first_final_detail = table.concat(require("coact.ui.detail").lines_for(final_summaries[1]), "\n")
+  local second_final_detail = table.concat(require("coact.ui.detail").lines_for(final_summaries[2]), "\n")
   assert(
-    table.concat(final_detail_lines, "\n"):match("# Thinking finished"),
-    "activity summary detail should have a clear title"
+    first_final_detail:match("# Thinking finished")
+      and first_final_detail:match("### Reasoning")
+      and first_final_detail:match("echo done"),
+    "the first activity summary should preserve reasoning and tool details"
   )
   assert(
-    table.concat(final_detail_lines, "\n"):match("### Reasoning")
-      and table.concat(final_detail_lines, "\n"):match("echo done")
-      and table.concat(final_detail_lines, "\n"):match("Agent: Model rerouted"),
-    "activity summary detail should preserve child details"
+    second_final_detail:match("# Thinking finished") and second_final_detail:match("Agent: Model rerouted"),
+    "the second activity summary should preserve late timeline details"
   )
 
   local split_activity_thread = state.ensure_thread("smoke-split-activity", {
@@ -4312,15 +4332,15 @@ coact.setup();
     status = "completed",
   })
   local split_blocks = render.select_render_tree(split_activity_thread)
-  local split_summary = nil
+  local split_summaries = {}
+  local split_summary_indexes = {}
   local split_progress_index = nil
-  local split_summary_index = nil
   local split_final_index = nil
   local split_standalone_activity = 0
   for index, block in ipairs(split_blocks) do
     if block.type == "ActivitySummaryBlock" then
-      split_summary = block
-      split_summary_index = index
+      table.insert(split_summaries, block)
+      table.insert(split_summary_indexes, index)
     elseif block.type == "ReasoningBlock" or block.type == "ToolCallBlock" then
       split_standalone_activity = split_standalone_activity + 1
     elseif block.type == "AssistantBlock" and block.text == "I found the relevant files." then
@@ -4329,23 +4349,31 @@ coact.setup();
       split_final_index = index
     end
   end
-  assert(split_summary ~= nil, "activity split across provider turn ids should still produce a summary")
+  assert(#split_summaries == 2, "activity split across provider turns should preserve both output segments")
   assert(
-    split_summary.children and #split_summary.children == 3,
-    "split activity summary should collect every reasoning and tool block in the run"
+    #split_summaries[1].children == 1 and #split_summaries[2].children == 2,
+    "each split output should own only the activity that preceded it"
   )
-  assert(split_standalone_activity == 0, "split activity should not leave standalone extmark placeholders")
+  assert(split_standalone_activity == 0, "completed split activity should not leave standalone placeholders")
   assert(
-    split_progress_index < split_summary_index and split_summary_index < split_final_index,
-    "split activity summary should appear after progress and before the last visible answer"
+    split_summary_indexes[1] < split_progress_index
+      and split_progress_index < split_summary_indexes[2]
+      and split_summary_indexes[2] < split_final_index,
+    "split activity should preserve folded/output/folded/output chronology across provider turn ids"
   )
   local split_activity_buf = vim.api.nvim_create_buf(false, true)
   state.bind_buffer(split_activity_thread, split_activity_buf)
   render.render(split_activity_thread)
+  local split_activity_lines = vim.api.nvim_buf_get_lines(split_activity_buf, 0, -1, false)
   assert(
-    #split_activity_thread.placeholder_marks == 1
-      and split_activity_thread.placeholder_marks[1].block.type == "ActivitySummaryBlock",
-    "completed split activity should render as one clustered extmark"
+    #split_activity_thread.placeholder_marks == 2
+      and split_activity_thread.placeholder_marks[1].block.type == "ActivitySummaryBlock"
+      and split_activity_thread.placeholder_marks[2].block.type == "ActivitySummaryBlock",
+    "completed split activity should render as two chronological summary rows"
+  )
+  assert(
+    count_line(split_activity_lines, "## Coact") == 1,
+    "provider turn splits should still render one assistant response frame"
   )
 
   local busy_activity_thread = state.ensure_thread("smoke-busy-activity", {
@@ -4365,16 +4393,58 @@ coact.setup();
     text = "progress update",
     status = "commentary",
   })
+  state.upsert_item("smoke-busy-activity", "turn-busy", {
+    id = "busy-tool-1",
+    type = "commandExecution",
+    command = "echo one",
+    cwd = vim.fn.getcwd(),
+    status = "completed",
+    aggregatedOutput = "one",
+    exitCode = 0,
+  })
+  state.upsert_item("smoke-busy-activity", "turn-busy", {
+    id = "busy-tool-2",
+    type = "commandExecution",
+    command = "echo two",
+    cwd = vim.fn.getcwd(),
+    status = "inProgress",
+    aggregatedOutput = "two",
+  })
   local busy_blocks = render.select_render_tree(busy_activity_thread)
-  assert(not vim.iter(busy_blocks):any(function(block)
-    return block.type == "ActivitySummaryBlock"
-  end), "busy commentary activity should remain fully inspectable until the final answer starts")
+  local busy_summary = nil
+  local busy_summary_index = nil
+  local busy_commentary_index = nil
+  local busy_tool_indexes = {}
+  for index, block in ipairs(busy_blocks) do
+    if block.type == "ActivitySummaryBlock" then
+      busy_summary = block
+      busy_summary_index = index
+    elseif block.type == "AssistantBlock" and block.state == "commentary" then
+      busy_commentary_index = index
+    elseif block.type == "ToolCallBlock" then
+      table.insert(busy_tool_indexes, index)
+    end
+  end
   assert(
-    vim.iter(busy_blocks):any(function(block)
-      return block.type == "ReasoningBlock"
-    end),
-    "busy activity should keep standalone reasoning rows"
+    busy_summary and #busy_summary.children == 1,
+    "busy activity should fold only the work completed before partial output"
   )
+  assert(
+    #busy_tool_indexes == 2
+      and busy_summary_index < busy_commentary_index
+      and busy_commentary_index < busy_tool_indexes[1]
+      and busy_tool_indexes[1] < busy_tool_indexes[2],
+    "busy activity should preserve folded/partial-output/tool process chronology"
+  )
+  local busy_activity_buf = vim.api.nvim_create_buf(false, true)
+  state.bind_buffer(busy_activity_thread, busy_activity_buf)
+  render.render(busy_activity_thread)
+  local busy_activity_lines = vim.api.nvim_buf_get_lines(busy_activity_buf, 0, -1, false)
+  assert(
+    #busy_activity_thread.placeholder_marks == 3,
+    "busy output should keep its folded prefix plus subsequent tools inspectable"
+  )
+  assert(count_line(busy_activity_lines, "## Coact") == 1, "busy output and tools should share one response frame")
 
   local streaming_final_thread = state.ensure_thread("smoke-streaming-final-activity", {
     title = "Smoke streaming final activity",
@@ -4410,13 +4480,15 @@ coact.setup();
     status = "final_answer",
   })
   local streaming_blocks = render.select_render_tree(streaming_final_thread)
+  local streaming_summary_indexes = {}
+  local streaming_summaries = {}
   local streaming_commentary_index = nil
-  local streaming_summary_index = nil
   local streaming_final_index = nil
   local streaming_standalone_activity = 0
   for index, block in ipairs(streaming_blocks) do
     if block.type == "ActivitySummaryBlock" then
-      streaming_summary_index = index
+      table.insert(streaming_summaries, block)
+      table.insert(streaming_summary_indexes, index)
     elseif block.type == "ReasoningBlock" or block.type == "ToolCallBlock" then
       streaming_standalone_activity = streaming_standalone_activity + 1
     elseif block.type == "AssistantBlock" and block.state == "commentary" then
@@ -4425,13 +4497,29 @@ coact.setup();
       streaming_final_index = index
     end
   end
-  assert(streaming_summary_index ~= nil, "streaming final answers should compact finished activity")
-  assert(streaming_commentary_index ~= nil, "streaming final compaction should keep commentary visible")
-  assert(streaming_final_index ~= nil, "streaming final compaction should keep the final answer visible")
-  assert(streaming_standalone_activity == 0, "streaming final compaction should hide standalone reasoning/tool rows")
+  assert(#streaming_summaries == 2, "streaming output should compact each finished activity segment")
   assert(
-    streaming_commentary_index < streaming_summary_index and streaming_summary_index < streaming_final_index,
-    "streaming final compaction should put thinking-finished between commentary and final answer"
+    #streaming_summaries[1].children == 1 and #streaming_summaries[2].children == 1,
+    "streaming summaries should preserve their separate reasoning and tool children"
+  )
+  assert(streaming_standalone_activity == 0, "streaming final output should hide completed standalone activity")
+  assert(
+    streaming_summary_indexes[1] < streaming_commentary_index
+      and streaming_commentary_index < streaming_summary_indexes[2]
+      and streaming_summary_indexes[2] < streaming_final_index,
+    "streaming output should preserve folded/output/folded/output chronology"
+  )
+  local streaming_final_buf = vim.api.nvim_create_buf(false, true)
+  state.bind_buffer(streaming_final_thread, streaming_final_buf)
+  render.render(streaming_final_thread)
+  local streaming_final_lines = vim.api.nvim_buf_get_lines(streaming_final_buf, 0, -1, false)
+  assert(
+    #streaming_final_thread.placeholder_marks == 2,
+    "streaming final output should render both completed activity segments as summaries"
+  )
+  assert(
+    count_line(streaming_final_lines, "## Coact") == 1,
+    "streaming partial and final output should share one assistant response frame"
   )
 end)()
 local core_pending_thread = state.ensure_thread("smoke-core-pending", {

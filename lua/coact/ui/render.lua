@@ -1404,26 +1404,21 @@ local activity_summary_types = {
   RawEventBlock = true,
 }
 
-local function final_assistant_block(block)
-  if not block or block.type ~= "AssistantBlock" then
-    return false
-  end
-  if util.trim(events.block_text(block)) == "" then
-    return false
-  end
-  return block.state ~= "commentary"
+local function visible_assistant_block(block)
+  return block and block.type == "AssistantBlock" and util.trim(events.block_text(block)) ~= ""
 end
 
-local function completed_activity_groups(blocks)
+local function response_groups(blocks)
   local groups = {}
   local groups_by_turn = {}
   local group_by_block = {}
   local current = nil
 
-  local function start_group()
+  local function start_group(block)
+    local seed = util.value(block and block.item_id) or util.value(block and block.message_id) or tostring(#groups + 1)
     local group = {
-      children = {},
-      final = nil,
+      id = "response:" .. tostring(seed),
+      outputs = {},
     }
     table.insert(groups, group)
     current = group
@@ -1434,7 +1429,7 @@ local function completed_activity_groups(blocks)
     local turn_id = util.value(block.message_id)
     local group = turn_id and groups_by_turn[turn_id] or nil
     if block.type == "UserBlock" then
-      group = start_group()
+      group = start_group(block)
       if turn_id then
         groups_by_turn[turn_id] = group
       end
@@ -1442,16 +1437,14 @@ local function completed_activity_groups(blocks)
       -- Pi may use several backend turn ids for one user/assistant run. Only
       -- ordered provider blocks extend it; appended local blocks must refer
       -- to an id that was already assigned.
-      group = current or start_group()
+      group = current or start_group(block)
       groups_by_turn[turn_id] = group
     end
 
     if group then
       group_by_block[block] = group
-      if activity_summary_types[block.type] then
-        table.insert(group.children, block)
-      elseif final_assistant_block(block) then
-        group.final = block
+      if visible_assistant_block(block) then
+        table.insert(group.outputs, block)
       end
     end
   end
@@ -1459,11 +1452,19 @@ local function completed_activity_groups(blocks)
   return groups, group_by_block
 end
 
-local function activity_summary_block(turn_id, children)
+local function response_grouped_block(block, group)
+  if not group or block.type == "UserBlock" then
+    return block
+  end
+  return vim.tbl_extend("force", {}, block, { response_group_id = group.id })
+end
+
+local function activity_summary_block(group, output, children)
+  local output_id = util.value(output.item_id) or util.value(output.message_id) or group.id
   return {
     type = "ActivitySummaryBlock",
-    message_id = turn_id,
-    item_id = "activity-summary:" .. tostring(turn_id),
+    message_id = output.message_id,
+    item_id = "activity-summary:" .. tostring(output_id),
     title = "Thinking finished",
     state = "finished",
     children = children,
@@ -1471,33 +1472,48 @@ local function activity_summary_block(turn_id, children)
       children = children,
     },
     local_only = true,
+    response_group_id = group.id,
   }
 end
 
-local function compact_completed_activity(_, blocks)
-  local groups, group_by_block = completed_activity_groups(blocks)
-  local compactable = {}
-  for _, group in ipairs(groups) do
-    if group.final and #group.children > 0 then
-      compactable[group] = true
+local function compact_activity_segments(thread, blocks)
+  local _, group_by_block = response_groups(blocks)
+  local next_output = {}
+  local target_by_activity = {}
+
+  for index = #blocks, 1, -1 do
+    local block = blocks[index]
+    local group = group_by_block[block]
+    if group then
+      if visible_assistant_block(block) then
+        next_output[group] = block
+      elseif activity_summary_types[block.type] then
+        local target = next_output[group]
+        if not target and block.local_only == true and not thread_busy(thread) then
+          target = group.outputs[#group.outputs]
+        end
+        target_by_activity[block] = target
+      end
+    end
+  end
+
+  local children_by_output = {}
+  for _, block in ipairs(blocks or {}) do
+    local output = target_by_activity[block]
+    if output then
+      children_by_output[output] = children_by_output[output] or {}
+      table.insert(children_by_output[output], block)
     end
   end
 
   local out = {}
-  local emitted = {}
   for _, block in ipairs(blocks or {}) do
-    local group = group_by_block[block]
-    if group and compactable[group] and activity_summary_types[block.type] then
-      -- Hold all activity in this user/assistant run until its last visible
-      -- answer. Pi can span one run across several internal turn ids.
-    elseif group and compactable[group] and block == group.final then
-      if not emitted[group] then
-        table.insert(out, activity_summary_block(group.final.message_id, group.children))
-        emitted[group] = true
+    local output = target_by_activity[block]
+    if not output then
+      if visible_assistant_block(block) and children_by_output[block] then
+        table.insert(out, activity_summary_block(group_by_block[block], block, children_by_output[block]))
       end
-      table.insert(out, block)
-    else
-      table.insert(out, block)
+      table.insert(out, response_grouped_block(block, group_by_block[block]))
     end
   end
   return out
@@ -1512,7 +1528,7 @@ function M.select_render_tree(thread)
   if config.get().render.show_raw_events then
     util.list_extend(blocks, thread.raw_blocks or {})
   end
-  return compact_completed_activity(thread, blocks)
+  return compact_activity_segments(thread, blocks)
 end
 
 local function user_meta(thread, block)
@@ -1537,7 +1553,7 @@ local function assistant_group_id(block)
   if not block or not assistant_content_types[block.type] then
     return nil
   end
-  return block.message_id or "__assistant__"
+  return util.value(block.response_group_id) or util.value(block.message_id) or "__assistant__"
 end
 
 local function legacy_hook_timeline_block(block)
@@ -1675,9 +1691,17 @@ end
 
 local function render_assistant_group(thread, lines, blocks, index)
   local group_id = assistant_group_id(blocks[index])
-  local first_block = blocks[index]
+  local header_block = blocks[index]
+  local cursor = index
+  while cursor <= #blocks and assistant_group_id(blocks[cursor]) == group_id do
+    if visible_assistant_block(blocks[cursor]) then
+      header_block = blocks[cursor]
+    end
+    cursor = cursor + 1
+  end
+
   local line = add(lines, "## Coact")
-  mark_header(thread, line, "assistant", providers.agent_label(), assistant_meta(thread, first_block), first_block)
+  mark_header(thread, line, "assistant", providers.agent_label(), assistant_meta(thread, header_block), header_block)
   add(lines, "")
   while index <= #blocks and assistant_group_id(blocks[index]) == group_id do
     render_block(thread, lines, blocks[index], { assistant_body = true, block_index = index })
