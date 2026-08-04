@@ -67,7 +67,10 @@ local runtime = {
   provider_ui = nil,
   branch_snapshot = nil,
   last_tree_action = nil,
+  reserved_turn = nil,
+  turn_start_pending = false,
   queued_turns = {},
+  user_item_seq = 0,
   tool_output = {},
   tool_args = {},
   tool_calls = {},
@@ -394,7 +397,10 @@ function M._remember_state(state)
     runtime.active_turn_id = nil
     runtime.last_turn_id = nil
     runtime.branch_snapshot = nil
+    runtime.reserved_turn = nil
+    runtime.turn_start_pending = false
     runtime.queued_turns = {}
+    runtime.user_item_seq = 0
     runtime.tool_output = {}
     runtime.tool_args = {}
     runtime.tool_calls = {}
@@ -412,6 +418,7 @@ local function current_thread_id()
 end
 
 local function reset_turn_stream_state()
+  runtime.user_item_seq = 0
   runtime.tool_output = {}
   runtime.tool_args = {}
   runtime.tool_calls = {}
@@ -420,6 +427,7 @@ end
 local function begin_turn(turn_id)
   runtime.active_turn_id = turn_id or next_turn_id()
   runtime.last_turn_id = runtime.active_turn_id
+  runtime.turn_start_pending = false
   reset_turn_stream_state()
   return runtime.active_turn_id
 end
@@ -439,6 +447,19 @@ local function streaming_behavior(value)
   return nil
 end
 
+local function reserve_turn(entry)
+  runtime.reserved_turn = entry
+end
+
+local function remove_reserved_turn(turn_id)
+  if runtime.reserved_turn and runtime.reserved_turn.id == turn_id then
+    local entry = runtime.reserved_turn
+    runtime.reserved_turn = nil
+    return entry
+  end
+  return nil
+end
+
 local function enqueue_turn(entry)
   runtime.queued_turns = runtime.queued_turns or {}
   table.insert(runtime.queued_turns, entry)
@@ -454,22 +475,34 @@ local function remove_queued_turn(turn_id)
   return nil
 end
 
-local function take_queued_turn()
-  if type(runtime.queued_turns) == "table" and #runtime.queued_turns > 0 then
-    return table.remove(runtime.queued_turns, 1)
+local function take_queued_turn(message_text)
+  if type(runtime.queued_turns) ~= "table" or #runtime.queued_turns == 0 then
+    return nil
   end
-  return nil
+  if message_text and message_text ~= "" then
+    for index, entry in ipairs(runtime.queued_turns) do
+      if entry.message == message_text then
+        return table.remove(runtime.queued_turns, index)
+      end
+    end
+  end
+  return table.remove(runtime.queued_turns, 1)
 end
 
-local function begin_event_turn()
+local function take_user_turn(message_text)
+  if runtime.reserved_turn then
+    local reserved = runtime.reserved_turn
+    runtime.reserved_turn = nil
+    return reserved
+  end
+  return take_queued_turn(message_text)
+end
+
+local function begin_event_turn(entry)
   if runtime.active_turn_id then
-    return runtime.active_turn_id, nil
+    return runtime.active_turn_id
   end
-  local queued = take_queued_turn()
-  if queued then
-    return begin_turn(queued.id), queued
-  end
-  return current_turn_id(), nil
+  return begin_turn(entry and entry.id or next_turn_id())
 end
 
 local function event_turn_id()
@@ -1004,7 +1037,15 @@ local function prompt_from_input(input)
   return util.trim(table.concat(parts, "\n\n")), images
 end
 
-local function user_item(turn_id, text, input)
+local function next_user_item_id(turn_id)
+  runtime.user_item_seq = (runtime.user_item_seq or 0) + 1
+  if runtime.user_item_seq == 1 then
+    return turn_id .. ":user"
+  end
+  return turn_id .. ":user:" .. tostring(runtime.user_item_seq)
+end
+
+local function user_item(turn_id, text, input, item_id, status)
   local content = {}
   for _, item in ipairs(type(input) == "table" and input or {}) do
     if
@@ -1026,9 +1067,9 @@ local function user_item(turn_id, text, input)
     }
   end
   return {
-    id = turn_id .. ":user",
+    id = item_id or (turn_id .. ":user"),
     type = "userMessage",
-    status = "submitted",
+    status = status or "submitted",
     content = content,
   }
 end
@@ -1287,14 +1328,23 @@ function M.custom_request(rpc, method, params, callback)
     runtime.current_thread_id = params.threadId or current_thread_id()
     local behavior = streaming_behavior(params.streamingBehavior)
     local queued = behavior ~= nil
-      and (runtime.active_turn_id ~= nil or (type(runtime.queued_turns) == "table" and #runtime.queued_turns > 0))
-    if not queued then
-      begin_turn(turn_id)
-    end
     local message, images = prompt_from_input(params.input)
     if message == "" and #images == 0 then
       callback({ message = "Pi prompt is empty" }, nil)
       return true
+    end
+    local entry = {
+      id = turn_id,
+      message = message,
+      input = vim.deepcopy(params.input),
+      streamingBehavior = behavior,
+    }
+    -- Reserve before writing RPC: Pi can stream events before Neovim runs the
+    -- scheduled response callback.
+    if queued then
+      enqueue_turn(entry)
+    else
+      reserve_turn(entry)
     end
     rpc._request_message("prompt", {
       message = message,
@@ -1304,17 +1354,13 @@ function M.custom_request(rpc, method, params, callback)
       if err then
         if queued then
           remove_queued_turn(turn_id)
+        else
+          remove_reserved_turn(turn_id)
         end
         callback(err, nil)
         return
       end
       if queued then
-        enqueue_turn({
-          id = turn_id,
-          message = message,
-          input = vim.deepcopy(params.input),
-          streamingBehavior = behavior,
-        })
         callback(nil, {
           queued = true,
           streamingBehavior = behavior,
@@ -1691,27 +1737,150 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
   return turns
 end
 
+local turn_scoped_events = {
+  message_end = true,
+  message_update = true,
+  tool_execution_end = true,
+  tool_execution_start = true,
+  tool_execution_update = true,
+  turn_end = true,
+}
+
+local function message_start_notifications(message, thread_id)
+  local role = type(message) == "table" and message.role or nil
+  local message_text = role == "user" and text_content(message.content) or nil
+  local entry = role == "user" and take_user_turn(message_text) or nil
+  local started = runtime.active_turn_id == nil
+  local turn_id = begin_event_turn(entry)
+  local out = {}
+  if started then
+    table.insert(
+      out,
+      notification("turn/started", {
+        threadId = thread_id,
+        turn = { id = turn_id },
+      })
+    )
+  end
+  if role == "user" then
+    if entry and entry.streamingBehavior then
+      table.insert(
+        out,
+        notification("pi/queued_turn_started", {
+          threadId = thread_id,
+          turnId = turn_id,
+          queuedTurnId = entry.id,
+        })
+      )
+    end
+    local item = user_item(
+      turn_id,
+      entry and entry.message or message_text,
+      entry and entry.input or nil,
+      next_user_item_id(turn_id),
+      "completed"
+    )
+    table.insert(
+      out,
+      notification("item/completed", {
+        threadId = thread_id,
+        turnId = turn_id,
+        item = item,
+      })
+    )
+  else
+    for _, item in ipairs(message_items(message, "running")) do
+      table.insert(
+        out,
+        notification("item/started", {
+          threadId = thread_id,
+          turnId = turn_id,
+          item = item,
+        })
+      )
+    end
+  end
+  return #out > 0 and notifications(out) or nil
+end
+
 function M.decode_notification(message)
   if type(message) ~= "table" or message.type == "response" then
     return nil
   end
   local thread_id = current_thread_id()
-  local turn_id = runtime.active_turn_id or runtime.last_turn_id
 
   if message.type == "turn_start" then
-    local queued
-    turn_id, queued = begin_event_turn()
-    local turn = { id = turn_id }
-    if queued then
-      turn.items = { user_item(turn_id, queued.message, queued.input) }
+    -- A Pi turn may be an automatic tool continuation. Wait for message_start
+    -- before deciding whether this turn owns a queued user prompt.
+    if runtime.active_turn_id then
+      runtime.last_turn_id = runtime.active_turn_id
+      runtime.active_turn_id = nil
     end
-    return notification("turn/started", {
+    runtime.turn_start_pending = true
+    return nil
+  end
+
+  if message.type == "agent_start" then
+    return notification("pi/agent_start", { threadId = thread_id, turnId = runtime.active_turn_id })
+  end
+
+  if message.type == "agent_end" then
+    return notification("pi/agent_end", {
       threadId = thread_id,
-      turn = turn,
+      turnId = runtime.active_turn_id or runtime.last_turn_id,
+      messages = message.messages,
+      willRetry = message.willRetry,
     })
   end
 
-  turn_id = event_turn_id()
+  if message.type == "agent_settled" then
+    runtime.active_turn_id = nil
+    runtime.reserved_turn = nil
+    runtime.turn_start_pending = false
+    runtime.queued_turns = {}
+    reset_turn_stream_state()
+    return notification("pi/agent_settled", { threadId = thread_id })
+  end
+
+  if message.type == "queue_update" then
+    return notification("pi/queue_update", {
+      threadId = thread_id,
+      steering = message.steering,
+      followUp = message.followUp,
+    })
+  end
+
+  if message.type == "compaction_start" then
+    return notification("pi/compaction_start", {
+      threadId = thread_id,
+      reason = message.reason,
+    })
+  end
+
+  if message.type == "compaction_end" then
+    return notification("thread/compacted", {
+      threadId = thread_id,
+      result = message.result,
+      reason = message.reason,
+    })
+  end
+
+  if message.type == "auto_retry_start" or message.type == "auto_retry_end" or message.type == "extension_error" then
+    return notification("pi/" .. message.type, vim.tbl_extend("force", { threadId = thread_id }, message))
+  end
+
+  if message.type == "message_start" then
+    return message_start_notifications(message.message, thread_id)
+  end
+
+  if not turn_scoped_events[message.type] then
+    return notification(
+      "pi/" .. tostring(message.type or "event"),
+      vim.tbl_extend("force", { threadId = thread_id }, message)
+    )
+  end
+
+  local turn_id = event_turn_id()
 
   if message.type == "turn_end" then
     local out = {}
@@ -1735,30 +1904,6 @@ function M.decode_notification(message)
     runtime.last_turn_id = turn_id
     runtime.active_turn_id = nil
     return notifications(out)
-  end
-
-  if message.type == "agent_start" then
-    return notification("pi/agent_start", { threadId = thread_id, turnId = turn_id })
-  end
-
-  if message.type == "agent_end" then
-    return notification("pi/agent_end", { threadId = thread_id, turnId = turn_id, messages = message.messages })
-  end
-
-  if message.type == "message_start" then
-    local items = message_items(message.message, "running")
-    local out = {}
-    for _, item in ipairs(items) do
-      table.insert(
-        out,
-        notification("item/started", {
-          threadId = thread_id,
-          turnId = turn_id,
-          item = item,
-        })
-      )
-    end
-    return #out > 0 and notifications(out) or nil
   end
 
   if message.type == "message_update" then
@@ -1874,37 +2019,7 @@ function M.decode_notification(message)
     })
   end
 
-  if message.type == "queue_update" then
-    return notification("pi/queue_update", {
-      threadId = thread_id,
-      steering = message.steering,
-      followUp = message.followUp,
-    })
-  end
-
-  if message.type == "compaction_start" then
-    return notification("pi/compaction_start", {
-      threadId = thread_id,
-      reason = message.reason,
-    })
-  end
-
-  if message.type == "compaction_end" then
-    return notification("thread/compacted", {
-      threadId = thread_id,
-      result = message.result,
-      reason = message.reason,
-    })
-  end
-
-  if message.type == "auto_retry_start" or message.type == "auto_retry_end" or message.type == "extension_error" then
-    return notification("pi/" .. message.type, vim.tbl_extend("force", { threadId = thread_id }, message))
-  end
-
-  return notification(
-    "pi/" .. tostring(message.type or "event"),
-    vim.tbl_extend("force", { threadId = thread_id }, message)
-  )
+  return nil
 end
 
 local function extension_response(rpc, message, payload)
@@ -1981,8 +2096,17 @@ local function handle_set_status(message)
   if key == tree_summary_status_key then
     if text == nil or text == "" then
       if thread.generation == "summarizing" then
-        local pending = thread.pending_request
-        if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
+        local queued = false
+        local ok, coact_state = pcall(require, "coact.state")
+        if ok then
+          for _, pending in ipairs(coact_state.get_thread_pending_requests(thread)) do
+            if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
+              queued = true
+              break
+            end
+          end
+        end
+        if queued then
           thread.generation = "submitted"
           thread.status_message = "Pi has a queued follow-up..."
         else

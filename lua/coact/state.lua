@@ -158,6 +158,9 @@ function M.ensure_thread(thread_id, attrs)
       view_state = {},
       folds = {},
       pending_request = nil,
+      pending_requests = {},
+      pi_agent_active = false,
+      pi_queue = { steering = {}, follow_up = {} },
       status_message = nil,
       last_error = nil,
     }
@@ -170,6 +173,96 @@ function M.ensure_thread(thread_id, attrs)
   end
   M.active_thread_id = thread_id
   return thread
+end
+
+-- pending_request remains the latest-entry compatibility field; the ordered
+-- list keeps every queued Pi follow-up visible until its user event arrives.
+local function synced_thread_pending_requests(thread)
+  if type(thread) ~= "table" then
+    return {}
+  end
+  local requests = type(thread.pending_requests) == "table" and thread.pending_requests or {}
+  local latest = thread.pending_request
+  if latest == nil then
+    requests = {}
+  else
+    local found = false
+    for _, request in ipairs(requests) do
+      if request == latest then
+        found = true
+        break
+      end
+    end
+    if not found then
+      requests = { latest }
+    end
+  end
+  thread.pending_requests = requests
+  return requests
+end
+
+function M.get_thread_pending_requests(thread_or_id)
+  local thread = type(thread_or_id) == "table" and thread_or_id or M.get_thread(thread_or_id)
+  return synced_thread_pending_requests(thread)
+end
+
+function M.add_thread_pending_request(thread_or_id, request)
+  local thread = type(thread_or_id) == "table" and thread_or_id or M.ensure_thread(thread_or_id)
+  local requests = synced_thread_pending_requests(thread)
+  local turn_id = type(request) == "table" and request.turn_id or nil
+  for _, candidate in ipairs(requests) do
+    if candidate == request or (turn_id and candidate.turn_id == turn_id) then
+      thread.pending_request = candidate
+      return candidate
+    end
+  end
+  table.insert(requests, request)
+  thread.pending_request = request
+  return request
+end
+
+function M.has_thread_pending_request(thread_or_id, request)
+  for _, candidate in ipairs(M.get_thread_pending_requests(thread_or_id)) do
+    if candidate == request then
+      return true
+    end
+  end
+  return false
+end
+
+function M.remove_thread_pending_request(thread_or_id, request)
+  local thread = type(thread_or_id) == "table" and thread_or_id or M.get_thread(thread_or_id)
+  if not thread then
+    return nil
+  end
+  local requests = synced_thread_pending_requests(thread)
+  for index, candidate in ipairs(requests) do
+    if candidate == request then
+      table.remove(requests, index)
+      thread.pending_request = requests[#requests]
+      return candidate
+    end
+  end
+  return nil
+end
+
+function M.clear_thread_pending_requests(thread_or_id, predicate)
+  local thread = type(thread_or_id) == "table" and thread_or_id or M.get_thread(thread_or_id)
+  if not thread then
+    return {}
+  end
+  local kept = {}
+  local removed = {}
+  for _, request in ipairs(synced_thread_pending_requests(thread)) do
+    if not predicate or predicate(request) then
+      table.insert(removed, request)
+    else
+      table.insert(kept, request)
+    end
+  end
+  thread.pending_requests = kept
+  thread.pending_request = kept[#kept]
+  return removed
 end
 
 function M.normalize_settings(settings)

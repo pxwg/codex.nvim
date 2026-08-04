@@ -203,8 +203,12 @@ renderer blocks used by the rest of coact.nvim. `/reasoning` queries Pi for the
 current model's available thinking levels when the picker opens, so
 model-declared holes and extended levels such as `max` are honored. Submitting
 another prompt while Pi is generating queues it as a Pi `followUp` instead of
-failing with "Agent is already processing"; the queued prompt remains visible
-until Pi starts that turn. Choosing a summary during Pi tree navigation shows a
+failing with "Agent is already processing". Queued prompts remain visible once
+under a distinct `Queued request` header with queue state and FIFO position
+until Pi delivers each user message. The normal user message then replaces the
+pending block without duplication. Pi queue updates stay internal instead of
+creating transcript blocks, and Pi's settled event clears the busy indicator.
+Choosing a summary during Pi tree navigation shows a
 `Coact summarizing...` spinner until Pi finishes the branch summary and
 navigation.
 

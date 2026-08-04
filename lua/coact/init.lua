@@ -199,9 +199,10 @@ local function submit_streaming_behavior(thread, opts)
   if thread.active_turn_id or busy_generations[thread.generation] then
     return "followUp"
   end
-  local pending = thread.pending_request
-  if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
-    return "followUp"
+  for _, pending in ipairs(state.get_thread_pending_requests(thread)) do
+    if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
+      return "followUp"
+    end
   end
   return nil
 end
@@ -325,8 +326,10 @@ function M.submit_text(text, thread_id, opts)
         created_at = util.now_ms(),
         settings = settings,
         streaming_behavior = streaming_behavior,
+        previous_generation = thread.generation,
+        previous_status_message = thread.status_message,
       }
-      thread.pending_request = pending_request
+      state.add_thread_pending_request(thread, pending_request)
       if streaming_behavior then
         if not busy_generations[thread.generation] then
           thread.generation = "submitted"
@@ -343,9 +346,20 @@ function M.submit_text(text, thread_id, opts)
         local failed_thread = state.get_thread(thread_id)
         if failed_thread then
           failed_thread.last_error = tostring(err.message or err)
-          if not pending_request or failed_thread.pending_request == pending_request then
-            failed_thread.pending_request = nil
-            failed_thread.generation = "idle"
+          if pending_request then
+            state.remove_thread_pending_request(failed_thread, pending_request)
+          end
+          if #state.get_thread_pending_requests(failed_thread) == 0 then
+            if streaming_behavior then
+              local queued_status = providers.agent_label() .. " queued a follow-up..."
+              if failed_thread.status_message == queued_status then
+                failed_thread.generation = pending_request.previous_generation or failed_thread.generation
+                failed_thread.status_message = pending_request.previous_status_message
+              end
+            else
+              failed_thread.generation = "idle"
+              failed_thread.status_message = nil
+            end
           end
           buffers.schedule_render(thread_id)
         end
@@ -364,8 +378,13 @@ function M.submit_text(text, thread_id, opts)
       if turn.id and pending_request then
         state.set_turn_settings(thread_id, turn.id, pending_request.settings)
       end
-      if submitted_thread and submitted_thread.pending_request == pending_request and turn.id then
-        submitted_thread.pending_request.turn_id = turn.id
+      if
+        submitted_thread
+        and turn.id
+        and pending_request
+        and state.has_thread_pending_request(submitted_thread, pending_request)
+      then
+        pending_request.turn_id = turn.id
       end
       if type(opts.on_success) == "function" then
         opts.on_success(turn)

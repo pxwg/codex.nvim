@@ -556,20 +556,52 @@ local function pending_user_already_rendered(thread, request)
 end
 
 function M.pending_blocks(thread)
-  local blocks = {}
-  local request = thread and thread.pending_request
-  if not request then
-    return blocks
+  local visible = {}
+  local seen_requests = {}
+  local seen_turns = {}
+  for index, request in ipairs(require("coact.state").get_thread_pending_requests(thread)) do
+    local text = pending_display_text(request)
+    local turn_id = util.value(request.turn_id)
+    local duplicate = seen_requests[request] or (turn_id and seen_turns[tostring(turn_id)])
+    if text ~= "" and not duplicate and not pending_user_already_rendered(thread, request) then
+      local behavior = request.streaming_behavior or request.streamingBehavior
+      table.insert(visible, {
+        request = request,
+        text = text,
+        behavior = behavior,
+        identity = turn_id or request.created_at or index,
+      })
+      seen_requests[request] = true
+      if turn_id then
+        seen_turns[tostring(turn_id)] = true
+      end
+    end
   end
-  local text = pending_display_text(request)
-  if text ~= "" and not pending_user_already_rendered(thread, request) then
+
+  local queue_count = 0
+  for _, entry in ipairs(visible) do
+    if entry.behavior then
+      queue_count = queue_count + 1
+    end
+  end
+
+  local blocks = {}
+  local queue_position = 0
+  for _, entry in ipairs(visible) do
+    local queued = entry.behavior ~= nil
+    if queued then
+      queue_position = queue_position + 1
+    end
     table.insert(blocks, {
-      type = "UserBlock",
-      message_id = "__pending_user__",
-      text = text,
-      state = (request.streaming_behavior or request.streamingBehavior) and "queued" or "submitted",
+      type = queued and "QueuedUserBlock" or "UserBlock",
+      message_id = "__pending_user__:" .. tostring(entry.identity),
+      text = entry.text,
+      state = queued and "queued" or "submitted",
+      queue_behavior = entry.behavior,
+      queue_position = queued and queue_position or nil,
+      queue_count = queued and queue_count or nil,
       local_only = true,
-      raw = request,
+      raw = entry.request,
     })
   end
   return blocks

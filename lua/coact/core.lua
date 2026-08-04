@@ -298,6 +298,32 @@ local function agent_label()
   return providers.agent_label()
 end
 
+local function queued_request(request)
+  return type(request) == "table" and (request.streaming_behavior or request.streamingBehavior) ~= nil
+end
+
+local function pending_request_for_turn(thread, turn_id)
+  local fallback
+  for _, request in ipairs(state.get_thread_pending_requests(thread)) do
+    if request.turn_id == turn_id then
+      return request
+    end
+    if not fallback and not request.turn_id and not queued_request(request) then
+      fallback = request
+    end
+  end
+  return fallback
+end
+
+local function has_queued_request(thread)
+  for _, request in ipairs(state.get_thread_pending_requests(thread)) do
+    if queued_request(request) then
+      return true
+    end
+  end
+  return false
+end
+
 local placeholder_stream_item_types = {
   commandExecution = true,
   mcpToolCall = true,
@@ -316,6 +342,17 @@ local function handle_item(params, completed)
     item.completed = true
   end
   local thread = state.get_thread(params.threadId)
+  if thread and item.type == "userMessage" then
+    local echoed = {}
+    for _, pending in ipairs(state.get_thread_pending_requests(thread)) do
+      if pending.turn_id == params.turnId then
+        table.insert(echoed, pending)
+      end
+    end
+    for _, pending in ipairs(echoed) do
+      state.remove_thread_pending_request(thread, pending)
+    end
+  end
   if thread and not completed then
     if
       item.type == "commandExecution"
@@ -442,14 +479,8 @@ handlers["turn/started"] = function(params)
   local thread = state.ensure_thread(params.threadId)
   state.add_turn(params.threadId, params.turn)
   thread.active_turn_id = params.turn.id
-  local pending = thread.pending_request
-  if
-    pending
-    and (
-      pending.turn_id == params.turn.id
-      or (not pending.turn_id and not pending.streaming_behavior and not pending.streamingBehavior)
-    )
-  then
+  local pending = pending_request_for_turn(thread, params.turn.id)
+  if pending then
     pending.turn_id = params.turn.id
     state.set_turn_settings(params.threadId, params.turn.id, pending.settings)
   end
@@ -470,18 +501,25 @@ handlers["turn/completed"] = function(params)
   if thread.active_turn_id == params.turn.id then
     thread.active_turn_id = nil
   end
-  local pending = thread.pending_request
-  if pending then
-    if
-      pending.turn_id == params.turn.id
-      or (not pending.turn_id and not pending.streaming_behavior and not pending.streamingBehavior)
-    then
-      thread.pending_request = nil
-      pending = nil
+  local completed_pending = {}
+  local fallback_pending
+  for _, pending in ipairs(state.get_thread_pending_requests(thread)) do
+    if pending.turn_id == params.turn.id then
+      table.insert(completed_pending, pending)
+    elseif not fallback_pending and not pending.turn_id and not queued_request(pending) then
+      fallback_pending = pending
     end
   end
-  if pending then
-    set_generation(thread, "submitted", agent_label() .. " has a queued follow-up...")
+  if #completed_pending == 0 and fallback_pending then
+    table.insert(completed_pending, fallback_pending)
+  end
+  for _, pending in ipairs(completed_pending) do
+    state.remove_thread_pending_request(thread, pending)
+  end
+  if #state.get_thread_pending_requests(thread) > 0 then
+    local message = has_queued_request(thread) and (agent_label() .. " has a queued follow-up...")
+      or (agent_label() .. " is thinking...")
+    set_generation(thread, "submitted", message)
   else
     set_generation(thread, "idle", nil)
   end
@@ -769,17 +807,31 @@ end
 
 handlers["pi/agent_start"] = function(params)
   local thread = state.ensure_thread(params.threadId)
+  thread.pi_agent_active = true
   thread.active_turn_id = params.turnId or thread.active_turn_id
   set_generation(thread, "submitted", "Pi is thinking...")
   schedule(params.threadId)
 end
 
+handlers["pi/queued_turn_started"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  for _, pending in ipairs(state.get_thread_pending_requests(thread)) do
+    if pending.turn_id == params.queuedTurnId then
+      state.set_turn_settings(params.threadId, params.turnId, pending.settings)
+      state.remove_thread_pending_request(thread, pending)
+      break
+    end
+  end
+end
+
 handlers["pi/agent_end"] = function(params)
   local thread = state.ensure_thread(params.threadId)
-  local pending = thread.pending_request
-  if pending and (pending.streaming_behavior or pending.streamingBehavior) then
+  if params.willRetry then
+    set_generation(thread, "waiting_backend", "Pi is retrying...")
+  elseif has_queued_request(thread) then
     set_generation(thread, "submitted", agent_label() .. " has a queued follow-up...")
   else
+    thread.pi_agent_active = false
     set_generation(thread, "idle", nil)
   end
   require("coact.rpc").request("account/rateLimits/read", { threadId = params.threadId }, function()
@@ -788,16 +840,23 @@ handlers["pi/agent_end"] = function(params)
   schedule(params.threadId)
 end
 
+handlers["pi/agent_settled"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.pi_agent_active = false
+  thread.active_turn_id = nil
+  thread.pi_queue = { steering = {}, follow_up = {} }
+  state.clear_thread_pending_requests(thread)
+  set_generation(thread, "idle", nil)
+  schedule(params.threadId)
+end
+
 handlers["pi/queue_update"] = function(params)
-  local steering = type(params.steering) == "table" and #params.steering or 0
-  local follow_up = type(params.followUp) == "table" and #params.followUp or 0
-  append_timeline(
-    "pi/queue_update",
-    params,
-    "Pi queue updated",
-    "updated",
-    ("steering: %d, follow-up: %d"):format(steering, follow_up)
-  )
+  local thread = state.ensure_thread(params.threadId)
+  thread.pi_queue = {
+    steering = type(params.steering) == "table" and vim.deepcopy(params.steering) or {},
+    follow_up = type(params.followUp) == "table" and vim.deepcopy(params.followUp) or {},
+  }
+  refresh_composer(thread)
 end
 
 handlers["pi/compaction_start"] = function(params)

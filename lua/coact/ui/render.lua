@@ -20,6 +20,7 @@ local stream_delta_flush_ms = 16
 
 local foldable_types = {
   UserBlock = true,
+  QueuedUserBlock = true,
   AssistantBlock = true,
   ErrorBlock = true,
 }
@@ -74,6 +75,7 @@ local stream_decoration_by_type = {
 
 local function define_highlights()
   vim.api.nvim_set_hl(0, "CoactHeaderUser", { default = true, link = "Identifier" })
+  vim.api.nvim_set_hl(0, "CoactHeaderQueued", { default = true, link = "DiagnosticWarn" })
   vim.api.nvim_set_hl(0, "CoactHeaderAssistant", { default = true, link = "Title" })
   vim.api.nvim_set_hl(0, "CoactHeaderAgent", { default = true, link = "DiagnosticOk" })
   vim.api.nvim_set_hl(0, "CoactHeaderSection", { default = true, link = "Special" })
@@ -293,6 +295,9 @@ end
 local function header_hl(kind)
   if kind == "user" then
     return "CoactHeaderUser"
+  end
+  if kind == "queued" then
+    return "CoactHeaderQueued"
   end
   if kind == "assistant" then
     return "CoactHeaderAssistant"
@@ -1542,6 +1547,14 @@ local function user_meta(thread, block)
   return labels
 end
 
+local function queued_user_meta(thread, block)
+  local labels = user_meta(thread, block)
+  if block.queue_count and block.queue_count > 1 then
+    labels[1] = ("queued %d/%d"):format(block.queue_position or 1, block.queue_count)
+  end
+  return labels
+end
+
 local function assistant_meta(thread, block)
   local labels = metadata.assistant_labels(thread, block)
   local ctx = metadata.context_label(thread, block)
@@ -1639,6 +1652,11 @@ render_block = function(thread, lines, block, opts)
   if block.type == "UserBlock" then
     local line = add(lines, "## You")
     mark_header(thread, line, "user", "You", user_meta(thread, block), block)
+    add(lines, "")
+    add_guarded_text(thread, lines, block.text)
+  elseif block.type == "QueuedUserBlock" then
+    local line = add(lines, "## Queued request")
+    mark_header(thread, line, "queued", "Queued request", queued_user_meta(thread, block), block)
     add(lines, "")
     add_guarded_text(thread, lines, block.text)
   elseif block.type == "AssistantBlock" then

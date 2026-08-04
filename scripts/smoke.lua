@@ -1639,6 +1639,10 @@ do
       {
         _request_message = function(method, params, callback)
           assert(method == "prompt", "Pi queued turn/start should still use prompt RPC")
+          assert(
+            pi_provider._runtime.queued_turns[1] and pi_provider._runtime.queued_turns[1].message == "queued follow-up",
+            "Pi should reserve queued turn state before sending the prompt RPC"
+          )
           prompt_params = params
           callback(nil, {})
         end,
@@ -1672,20 +1676,78 @@ do
       pi_provider.decode_notification({ type = "turn_end", message = { role = "assistant", content = {} } })
     assert(active_end, "Pi active turn_end should decode before queued follow-up starts")
     assert(pi_provider._runtime.active_turn_id == nil, "Pi active turn_end should clear the active turn")
+    local agent_end = pi_provider.decode_notification({ type = "agent_end", messages = {} })
+    local queue_update = pi_provider.decode_notification({ type = "queue_update", steering = {}, followUp = {} })
+    local agent_start = pi_provider.decode_notification({ type = "agent_start" })
+    assert(
+      agent_end and queue_update and agent_start and pi_provider._runtime.active_turn_id == nil,
+      "Pi thread-level lifecycle and queue events should not allocate phantom turns"
+    )
     local queued_start = pi_provider.decode_notification({ type = "turn_start" })
     assert(
-      queued_start
-        and queued_start.message.params.turn.id == queued_result.turn.id
-        and queued_start.message.params.turn.items[1].id == queued_result.turn.id .. ":user",
-      "Pi queued turn_start should consume the queued id and emit the queued user item"
+      queued_start == nil and pi_provider._runtime.active_turn_id == nil,
+      "Pi turn_start should wait for the first message before choosing a queued turn"
+    )
+    local queued_message_start = pi_provider.decode_notification({
+      type = "message_start",
+      message = {
+        role = "user",
+        content = { { type = "text", text = "queued follow-up" } },
+      },
+    })
+    assert(
+      queued_message_start
+        and queued_message_start[1].message.method == "turn/started"
+        and queued_message_start[1].message.params.turn.id == queued_result.turn.id
+        and queued_message_start[3].message.params.item.id == queued_result.turn.id .. ":user",
+      "Pi queued user message should consume the queued id and emit the user item in that turn"
     )
     assert(
       pi_provider._runtime.active_turn_id == queued_result.turn.id,
-      "Pi queued turn_start should become the active turn for subsequent deltas"
+      "Pi queued user message should become the active turn for subsequent deltas"
     )
-    pi_provider._runtime.active_turn_id = nil
+
+    pi_provider._runtime.active_turn_id = "pi-turn-tool-active"
+    pi_provider._runtime.last_turn_id = "pi-turn-tool-active"
+    pi_provider._runtime.queued_turns = {
+      {
+        id = "pi-turn-after-tools",
+        message = "after tools",
+        input = { { type = "text", text = "after tools" } },
+        streamingBehavior = "followUp",
+      },
+    }
+    pi_provider.decode_notification({ type = "turn_end", message = { role = "assistant", content = {} } })
+    pi_provider.decode_notification({ type = "turn_start" })
+    local tool_continuation = pi_provider.decode_notification({
+      type = "message_start",
+      message = { role = "assistant", content = {} },
+    })
+    assert(
+      tool_continuation
+        and tool_continuation[1].message.params.turn.id ~= "pi-turn-after-tools"
+        and pi_provider._runtime.queued_turns[1].id == "pi-turn-after-tools",
+      "Pi assistant tool continuations should not consume queued follow-up turns"
+    )
+    pi_provider.decode_notification({ type = "turn_end", message = { role = "assistant", content = {} } })
+    pi_provider.decode_notification({ type = "turn_start" })
+    local after_tools_start = pi_provider.decode_notification({
+      type = "message_start",
+      message = { role = "user", content = { { type = "text", text = "after tools" } } },
+    })
+    assert(
+      after_tools_start and after_tools_start[1].message.params.turn.id == "pi-turn-after-tools",
+      "Pi should consume a follow-up only when its queued user message starts"
+    )
+    local settled = pi_provider.decode_notification({ type = "agent_settled" })
+    assert(
+      settled
+        and settled.message.method == "pi/agent_settled"
+        and pi_provider._runtime.active_turn_id == nil
+        and #pi_provider._runtime.queued_turns == 0,
+      "Pi agent_settled should clear transient turn and queue state"
+    )
     pi_provider._runtime.last_turn_id = nil
-    pi_provider._runtime.queued_turns = {}
   end)()
   coact.setup({
     provider = "pi",
@@ -4073,7 +4135,36 @@ assert(
     "effort medium",
   }),
   "pending userMessage headers should use submitted turn settings"
-)
+);
+(function()
+  state.clear_thread_pending_requests(thread)
+  state.add_thread_pending_request(thread, {
+    prompt = "first queued prompt",
+    turn_id = "queued-first",
+    streaming_behavior = "followUp",
+  })
+  local second_queued_request = {
+    prompt = "second queued prompt",
+    turn_id = "queued-second",
+    streaming_behavior = "followUp",
+  }
+  state.add_thread_pending_request(thread, second_queued_request)
+  state.add_thread_pending_request(thread, vim.deepcopy(second_queued_request))
+  local queued_pending_blocks = events.pending_blocks(thread)
+  assert(
+    #queued_pending_blocks == 2
+      and #state.get_thread_pending_requests(thread) == 2
+      and queued_pending_blocks[1].type == "QueuedUserBlock"
+      and queued_pending_blocks[1].state == "queued"
+      and queued_pending_blocks[1].queue_position == 1
+      and queued_pending_blocks[1].queue_count == 2
+      and queued_pending_blocks[1].text == "first queued prompt"
+      and queued_pending_blocks[2].type == "QueuedUserBlock"
+      and queued_pending_blocks[2].queue_position == 2
+      and queued_pending_blocks[2].text == "second queued prompt",
+    "pending Pi follow-ups should render once in FIFO order with explicit queue state"
+  )
+end)()
 thread.pending_request = nil
 thread.active_turn_id = nil
 local asset_prompt = "@image:`" .. image_asset .. "`\n\ninspect image"
@@ -4154,6 +4245,36 @@ assert(
   "pending asset prompt should hide once the same turn has a userMessage echo"
 )
 local render = require("coact.ui.render")
+do
+  local queued_render_thread = state.ensure_thread("smoke-queued-render", {
+    title = "Smoke queued render",
+    cwd = vim.fn.getcwd(),
+  })
+  state.add_thread_pending_request(queued_render_thread, {
+    prompt = "visibly queued prompt",
+    turn_id = "visibly-queued-turn",
+    streaming_behavior = "followUp",
+  })
+  local queued_render_buf = buffers.ensure("smoke-queued-render")
+  render.render(queued_render_thread)
+  local queued_render_lines = vim.api.nvim_buf_get_lines(queued_render_buf, 0, -1, false)
+  local queued_header_count = 0
+  local user_header_count = 0
+  for _, line in ipairs(queued_render_lines) do
+    queued_header_count = queued_header_count + (line == "## Queued request" and 1 or 0)
+    user_header_count = user_header_count + (line == "## You" and 1 or 0)
+  end
+  assert(
+    queued_header_count == 1 and user_header_count == 0,
+    "queued requests should use a distinct queued header instead of duplicating the active user request frame"
+  )
+  assert(
+    queued_render_thread.header_marks[#queued_render_thread.header_marks].kind == "queued"
+      and queued_render_thread.header_marks[#queued_render_thread.header_marks].meta[1] == "queued",
+    "queued request headers should expose their queue state"
+  )
+end
+
 do
   local markdown_guard_thread = state.ensure_thread("smoke-markdown-guard", {
     title = "Smoke markdown guard",
@@ -4605,6 +4726,23 @@ core.handle_notification({
 assert(
   core_pending_thread.pending_request.turn_id == "turn-core",
   "turn/started should bind pending requests to the active turn"
+)
+core.handle_notification({
+  method = "item/completed",
+  params = {
+    threadId = "smoke-core-pending",
+    turnId = "turn-core",
+    item = {
+      id = "turn-core:user",
+      type = "userMessage",
+      status = "completed",
+      content = { { type = "text", text = "core pending" } },
+    },
+  },
+})
+assert(
+  core_pending_thread.pending_request == nil,
+  "a server userMessage echo should replace pending UI state instead of rendering a duplicate request"
 );
 (function()
   local core_queued_pending_thread = state.ensure_thread("smoke-core-queued-pending", {
@@ -4638,6 +4776,138 @@ assert(
   assert(
     core_queued_pending_thread.pending_request == nil,
     "turn/completed for the queued turn should clear the queued pending request"
+  )
+  local timeline_count = #core_queued_pending_thread.timeline_blocks
+  core.handle_notification({
+    method = "pi/queue_update",
+    params = {
+      threadId = "smoke-core-queued-pending",
+      steering = {},
+      followUp = { "queued without transcript noise" },
+    },
+  })
+  assert(
+    #core_queued_pending_thread.timeline_blocks == timeline_count
+      and core_queued_pending_thread.pi_queue.follow_up[1] == "queued without transcript noise",
+    "Pi queue updates should refresh queue cache without adding timeline blocks"
+  )
+  state.add_thread_pending_request(core_queued_pending_thread, {
+    prompt = "stale queued pending",
+    turn_id = "stale-queued-turn",
+    streaming_behavior = "followUp",
+  })
+  core_queued_pending_thread.generation = "submitted"
+  core.handle_notification({
+    method = "pi/agent_settled",
+    params = { threadId = "smoke-core-queued-pending" },
+  })
+  assert(
+    core_queued_pending_thread.generation == "idle"
+      and core_queued_pending_thread.pending_request == nil
+      and #state.get_thread_pending_requests(core_queued_pending_thread) == 0,
+    "Pi agent_settled should clear stale queued UI state"
+  )
+end)();
+(function()
+  local pi = require("coact.providers.pi")
+  local queue_thread_id = "pi:smoke-queue-order"
+  local queue_thread = state.ensure_thread(queue_thread_id, {
+    generation = "streaming",
+    active_turn_id = "queue-active-turn",
+  })
+  state.upsert_item(queue_thread_id, "queue-active-turn", {
+    id = "queue-active-output",
+    type = "agentMessage",
+    status = "completed",
+    text = "active answer",
+  })
+  state.add_thread_pending_request(queue_thread, {
+    prompt = "queued question",
+    input = { { type = "text", text = "queued question" } },
+    turn_id = "queue-follow-up-turn",
+    streaming_behavior = "followUp",
+  })
+  pi._runtime.current_thread_id = queue_thread_id
+  pi._runtime.active_turn_id = "queue-active-turn"
+  pi._runtime.last_turn_id = "queue-active-turn"
+  pi._runtime.reserved_turn = nil
+  pi._runtime.queued_turns = {
+    {
+      id = "queue-follow-up-turn",
+      message = "queued question",
+      input = { { type = "text", text = "queued question" } },
+      streamingBehavior = "followUp",
+    },
+  }
+  local function dispatch_pi(raw)
+    local decoded = pi.decode_notification(raw)
+    for _, entry in ipairs(decoded and (vim.islist(decoded) and decoded or { decoded }) or {}) do
+      core.handle_notification(entry.message)
+    end
+  end
+  local queued_before_delivery = 0
+  for _, block in ipairs(render.select_render_tree(queue_thread)) do
+    if block.type == "QueuedUserBlock" and events.block_text(block) == "queued question" then
+      queued_before_delivery = queued_before_delivery + 1
+    end
+  end
+  assert(queued_before_delivery == 1, "a waiting Pi follow-up should render exactly once with queued state")
+  dispatch_pi({ type = "turn_end", message = { role = "assistant", content = {} } })
+  dispatch_pi({ type = "turn_start" })
+  dispatch_pi({ type = "queue_update", steering = {}, followUp = {} })
+  dispatch_pi({
+    type = "message_start",
+    message = { role = "user", content = { { type = "text", text = "queued question" } } },
+  })
+  assert(
+    #state.get_thread_pending_requests(queue_thread) == 0,
+    "Pi should remove queued UI state as soon as the delivered user message replaces it"
+  )
+  local delivered_user_count = 0
+  local stale_queue_count = 0
+  for _, block in ipairs(render.select_render_tree(queue_thread)) do
+    if events.block_text(block) == "queued question" then
+      delivered_user_count = delivered_user_count + (block.type == "UserBlock" and 1 or 0)
+      stale_queue_count = stale_queue_count + (block.type == "QueuedUserBlock" and 1 or 0)
+    end
+  end
+  assert(
+    delivered_user_count == 1 and stale_queue_count == 0,
+    "a delivered Pi follow-up should replace rather than duplicate its queued request block"
+  )
+  dispatch_pi({ type = "message_start", message = { role = "assistant", content = {} } })
+  dispatch_pi({
+    type = "message_update",
+    assistantMessageEvent = { type = "text_delta", contentIndex = 0, delta = "queued answer" },
+  })
+  dispatch_pi({
+    type = "message_end",
+    message = { role = "assistant", content = { { type = "text", text = "queued answer" } } },
+  })
+  dispatch_pi({
+    type = "turn_end",
+    message = { role = "assistant", content = { { type = "text", text = "queued answer" } } },
+  })
+  dispatch_pi({ type = "agent_settled" })
+  local user_index
+  local answer_index
+  for index, block in ipairs(require("coact.ui.render").select_render_tree(queue_thread)) do
+    local text = require("coact.events").block_text(block)
+    if block.type == "UserBlock" and text == "queued question" then
+      user_index = index
+    elseif block.type == "AssistantBlock" and text == "queued answer" then
+      answer_index = index
+    end
+  end
+  assert(
+    user_index and answer_index and user_index < answer_index,
+    "Pi queued user messages should render before their streamed assistant response"
+  )
+  assert(
+    queue_thread.generation == "idle"
+      and #state.get_thread_pending_requests(queue_thread) == 0
+      and #queue_thread.timeline_blocks == 0,
+    "Pi queue completion should settle without pending state or queue timeline blocks"
   )
 end)()
 dynamic_tools._mark_nvim_apply_patch_auto_apply(
