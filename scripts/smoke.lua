@@ -457,6 +457,13 @@ do
       and pi_extension_source:match('registerCommand%("coact%-nvim%-branch%-snapshot"')
       and pi_extension_source:match("__coactNvimPiBranchSnapshot"),
     "Pi edit bridge extension should register tree navigation and branch snapshots"
+  )
+  assert(
+    pi_extension_source:find('const treeSummaryStatusKey = "coact.nvim.tree-summary";', 1, true)
+      and pi_extension_source:find('ctx.ui.setStatus(treeSummaryStatusKey, "summarizing");', 1, true)
+      and pi_extension_source:find("result = await ctx.navigateTree", 1, true)
+      and pi_extension_source:find("ctx.ui.setStatus(treeSummaryStatusKey, undefined);", 1, true),
+    "Pi tree navigation should bracket branch summarization with an observable status lifecycle"
   );
   (function()
     local pi_tree = require("coact.providers.pi_tree")
@@ -1037,6 +1044,66 @@ do
         title = "pi - smoke",
       }, pi_ui_rpc),
       "Pi provider should handle extension title updates"
+    )
+    pi_state_thread.generation = "idle"
+    pi_state_thread.status_message = nil
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-tree-summary-start-smoke",
+        method = "setStatus",
+        statusKey = "coact.nvim.tree-summary",
+        statusText = "summarizing",
+      }, pi_ui_rpc),
+      "Pi provider should handle tree summary lifecycle updates"
+    )
+    assert(
+      pi_state_thread.generation == "summarizing" and pi_state_thread.status_message == "Pi is summarizing a branch...",
+      "Pi tree summary start should enter an observable summarizing generation"
+    )
+    local pi_summary_buf = require("coact.buffers").ensure("pi:smoke-session")
+    local pi_summary_render = require("coact.ui.render")
+    pi_summary_render.render(pi_state_thread)
+    local pi_summary_spinner = pi_state_thread.spinner_mark
+    local pi_summary_spinner_extmark = pi_summary_spinner
+        and pi_summary_spinner.extmark_id
+        and vim.api.nvim_buf_get_extmark_by_id(
+          pi_summary_buf,
+          pi_summary_render.namespace(),
+          pi_summary_spinner.extmark_id,
+          { details = true }
+        )
+      or nil
+    local pi_summary_spinner_text = pi_summary_spinner_extmark
+        and pi_summary_spinner_extmark[3]
+        and pi_summary_spinner_extmark[3].virt_text
+        and pi_summary_spinner_extmark[3].virt_text[1]
+        and pi_summary_spinner_extmark[3].virt_text[1][1]
+      or nil
+    assert(
+      pi_summary_spinner_text and pi_summary_spinner_text:find("Coact summarizing...", 1, true),
+      "Pi tree summary generation should render a Coact summarizing spinner"
+    )
+    assert(
+      not (pi_state_thread.provider_ui and pi_state_thread.provider_ui.statuses["coact.nvim.tree-summary"]),
+      "Pi tree summary lifecycle status should not leak into provider status chrome"
+    )
+    assert(
+      pi_provider.handle_raw_message({
+        type = "extension_ui_request",
+        id = "pi-tree-summary-end-smoke",
+        method = "setStatus",
+        statusKey = "coact.nvim.tree-summary",
+        statusText = vim.NIL,
+      }, pi_ui_rpc),
+      "Pi provider should clear tree summary lifecycle updates"
+    )
+    pi_summary_render.render(pi_state_thread)
+    assert(
+      pi_state_thread.generation == "idle"
+        and pi_state_thread.status_message == nil
+        and pi_state_thread.spinner_mark == nil,
+      "Pi tree summary completion should clear the summarizing spinner"
     )
     assert(
       pi_provider.handle_raw_message({

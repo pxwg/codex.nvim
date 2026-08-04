@@ -710,6 +710,7 @@ local busy_generations = {
   submitted = true,
   waiting_backend = true,
   streaming = true,
+  summarizing = true,
   tool_running = true,
   patch_review = true,
   reconciling = true,
@@ -724,6 +725,7 @@ local function spinner_label(thread)
   return thread.generation == "tool_running" and "tooling"
     or thread.generation == "patch_review" and "reviewing patch"
     or thread.generation == "waiting_backend" and "waiting"
+    or thread.generation == "summarizing" and "summarizing..."
     or thread.generation == "reconciling" and "syncing"
     or thread.generation == "cancelling" and "stopping"
     or thread.generation == "submitted" and "thinking"

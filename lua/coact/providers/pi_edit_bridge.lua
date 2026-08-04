@@ -106,6 +106,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Type } from "typebox";
 
+const treeSummaryStatusKey = "coact.nvim.tree-summary";
+
 const replaceEditSchema = Type.Object({
   oldText: Type.String({
     description: "Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.",
@@ -535,7 +537,17 @@ async function handleTreeCommand(args, ctx) {
   }
 
   const editorText = entryEditorText(target);
-  const result = await ctx.navigateTree(target.id, { summarize, customInstructions });
+  if (summarize) {
+    ctx.ui.setStatus(treeSummaryStatusKey, "summarizing");
+  }
+  let result;
+  try {
+    result = await ctx.navigateTree(target.id, { summarize, customInstructions });
+  } finally {
+    if (summarize) {
+      ctx.ui.setStatus(treeSummaryStatusKey, undefined);
+    }
+  }
   if (result?.cancelled) {
     ctx.ui.notify("Tree navigation cancelled", "warning");
     return treeAction("cancel", target.id);

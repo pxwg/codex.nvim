@@ -204,7 +204,9 @@ current model's available thinking levels when the picker opens, so
 model-declared holes and extended levels such as `max` are honored. Submitting
 another prompt while Pi is generating queues it as a Pi `followUp` instead of
 failing with "Agent is already processing"; the queued prompt remains visible
-until Pi starts that turn.
+until Pi starts that turn. Choosing a summary during Pi tree navigation shows a
+`Coact summarizing...` spinner until Pi finishes the branch summary and
+navigation.
 
 When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi
 extension that registers `nvim_exec_lua`. The tool runs with the thread's
@@ -487,8 +489,8 @@ turn ids. Activity before each visible output compacts into a collapsed
 `Thinking finished` row, while activity after partial output remains live until
 the next output boundary. This preserves folded activity -> output -> folded
 activity -> output chronology. Busy turns show a spinner whose label follows
-the current generation state: thinking, reasoning, streaming, tooling, patch
-review, syncing, or stopping.
+the current generation state: thinking, reasoning, streaming, summarizing,
+tooling, patch review, syncing, or stopping.
 
 The renderer tracks per-window view state. A transcript window near the bottom
 follows the conversation while the active provider streams. Cursor movement or scrolling away

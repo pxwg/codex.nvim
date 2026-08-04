@@ -54,6 +54,7 @@ local M = {
 }
 
 local request_session_stats
+local tree_summary_status_key = "coact.nvim.tree-summary"
 
 local runtime = {
   session_id = nil,
@@ -1940,7 +1941,7 @@ local function provider_ui_thread()
   return coact_state.ensure_thread(current_thread_id())
 end
 
-local function refresh_provider_ui(thread)
+local function refresh_provider_ui(thread, render_history)
   if not thread then
     return
   end
@@ -1951,6 +1952,9 @@ local function refresh_provider_ui(thread)
     end
     if buffers.refresh_chrome then
       buffers.refresh_chrome(thread)
+    end
+    if render_history and buffers.schedule_render then
+      buffers.schedule_render(thread.id)
     end
   end
 end
@@ -1973,8 +1977,27 @@ local function handle_set_status(message)
   if not thread then
     return true
   end
-  local ui = ensure_provider_ui(thread)
   local text = util.value(message.statusText)
+  if key == tree_summary_status_key then
+    if text == nil or text == "" then
+      if thread.generation == "summarizing" then
+        local pending = thread.pending_request
+        if type(pending) == "table" and (pending.streaming_behavior or pending.streamingBehavior) then
+          thread.generation = "submitted"
+          thread.status_message = "Pi has a queued follow-up..."
+        else
+          thread.generation = "idle"
+          thread.status_message = nil
+        end
+      end
+    else
+      thread.generation = "summarizing"
+      thread.status_message = "Pi is summarizing a branch..."
+    end
+    refresh_provider_ui(thread, true)
+    return true
+  end
+  local ui = ensure_provider_ui(thread)
   if text == nil or text == "" then
     ui.statuses[key] = nil
   else

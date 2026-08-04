@@ -181,6 +181,7 @@ local busy_generations = {
   submitted = true,
   waiting_backend = true,
   streaming = true,
+  summarizing = true,
   tool_running = true,
   patch_review = true,
   reconciling = true,
