@@ -4809,6 +4809,82 @@ assert(
   )
 end)();
 (function()
+  local pi_rollout_thread = state.ensure_thread("smoke-pi-rollout-busy", {
+    title = "Smoke Pi rollout busy",
+    cwd = vim.fn.getcwd(),
+  })
+  core.handle_notification({
+    method = "pi/agent_start",
+    params = { threadId = pi_rollout_thread.id, turnId = "pi-rollout-turn" },
+  })
+  core.handle_notification({
+    method = "item/started",
+    params = {
+      threadId = pi_rollout_thread.id,
+      turnId = "pi-rollout-turn",
+      item = {
+        id = "pi-read-call",
+        type = "dynamicToolCall",
+        namespace = "pi",
+        tool = "read",
+        status = "running",
+      },
+    },
+  })
+  core.handle_notification({
+    method = "item/completed",
+    params = {
+      threadId = pi_rollout_thread.id,
+      turnId = "pi-rollout-turn",
+      item = {
+        id = "pi-read-call",
+        type = "dynamicToolCall",
+        namespace = "pi",
+        tool = "read",
+        status = "completed",
+      },
+    },
+  })
+  core.handle_notification({
+    method = "turn/completed",
+    params = {
+      threadId = pi_rollout_thread.id,
+      turn = { id = "pi-rollout-turn", items = {} },
+    },
+  })
+  local pi_rollout_buf = buffers.ensure(pi_rollout_thread.id)
+  render.render(pi_rollout_thread)
+  assert(
+    pi_rollout_thread.pi_agent_active
+      and pi_rollout_thread.generation == "submitted"
+      and pi_rollout_thread.spinner_mark ~= nil,
+    "a completed Pi tool turn should keep the rollout spinner active"
+  )
+  core.handle_notification({
+    method = "pi/agent_end",
+    params = { threadId = pi_rollout_thread.id, willRetry = false },
+  })
+  render.render(pi_rollout_thread)
+  assert(
+    pi_rollout_thread.pi_agent_active
+      and pi_rollout_thread.generation == "waiting_backend"
+      and pi_rollout_thread.spinner_mark ~= nil,
+    "Pi agent_end should keep spinning until agent_settled"
+  )
+  core.handle_notification({
+    method = "pi/agent_settled",
+    params = { threadId = pi_rollout_thread.id },
+  })
+  render.render(pi_rollout_thread)
+  assert(
+    vim.api.nvim_buf_is_valid(pi_rollout_buf)
+      and not pi_rollout_thread.pi_agent_active
+      and pi_rollout_thread.generation == "idle"
+      and pi_rollout_thread.spinner_mark == nil,
+    "Pi agent_settled should stop the rollout spinner"
+  )
+end)();
+(function()
   local pi = require("coact.providers.pi")
   local queue_thread_id = "pi:smoke-queue-order"
   local queue_thread = state.ensure_thread(queue_thread_id, {

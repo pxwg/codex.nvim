@@ -520,6 +520,10 @@ handlers["turn/completed"] = function(params)
     local message = has_queued_request(thread) and (agent_label() .. " has a queued follow-up...")
       or (agent_label() .. " is thinking...")
     set_generation(thread, "submitted", message)
+  elseif thread.pi_agent_active then
+    -- Pi turn completion only closes one model/tool turn. The rollout stays
+    -- active until pi/agent_settled, including automatic tool continuations.
+    set_generation(thread, "submitted", agent_label() .. " is thinking...")
   else
     set_generation(thread, "idle", nil)
   end
@@ -830,8 +834,11 @@ handlers["pi/agent_end"] = function(params)
     set_generation(thread, "waiting_backend", "Pi is retrying...")
   elseif has_queued_request(thread) then
     set_generation(thread, "submitted", agent_label() .. " has a queued follow-up...")
+  elseif thread.pi_agent_active then
+    -- agent_end may still be followed by extension work, compaction, retry, or
+    -- queued continuations. Only agent_settled is authoritative rollout end.
+    set_generation(thread, "waiting_backend", "Pi is settling...")
   else
-    thread.pi_agent_active = false
     set_generation(thread, "idle", nil)
   end
   require("coact.rpc").request("account/rateLimits/read", { threadId = params.threadId }, function()
