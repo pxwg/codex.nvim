@@ -10,6 +10,7 @@ local function ensure_highlights()
   highlights_ready = true
   vim.api.nvim_set_hl(0, "CoactPickerIcon", { default = true, link = "DiagnosticOk" })
   vim.api.nvim_set_hl(0, "CoactPickerIconMuted", { default = true, link = "Comment" })
+  vim.api.nvim_set_hl(0, "CoactPickerTree", { default = true, link = "LineNr" })
   vim.api.nvim_set_hl(0, "CoactPickerTitle", { default = true, link = "Title" })
   vim.api.nvim_set_hl(0, "CoactPickerPreview", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactPickerMeta", { default = true, link = "Comment" })
@@ -179,10 +180,144 @@ local function thread_meta(thread)
     message_count = message_count_label(thread),
     updated = time_label(first_value(thread.updated_at, thread.updatedAt, thread.lastActivityAt, thread.created_at)),
     session = path_label(first_value(thread.sessionFile, thread.session_file)),
+    parent_session = path_label(
+      first_value(
+        thread.parentSessionPath,
+        thread.parent_session_path,
+        thread.parentSessionFile,
+        thread.parent_session_file
+      )
+    ),
     icon = icon,
     icon_hl = icon_hl,
     status = status,
   }
+end
+
+local function parent_thread_id(thread)
+  local id = first_value(thread.parentThreadId, thread.parent_thread_id)
+  return id and tostring(id) or nil
+end
+
+local function session_tree(threads)
+  local nodes = {}
+  local by_id = {}
+  for index, thread in ipairs(threads or {}) do
+    local id = util.value(thread.id)
+    local node = {
+      thread = thread,
+      index = index,
+      id = id and tostring(id) or nil,
+      parent_id = parent_thread_id(thread),
+      children = {},
+    }
+    table.insert(nodes, node)
+    if node.id and not by_id[node.id] then
+      by_id[node.id] = node
+    end
+  end
+
+  for _, node in ipairs(nodes) do
+    node.parent_candidate = node.parent_id and by_id[node.parent_id] or nil
+  end
+
+  local function creates_cycle(node, parent)
+    local seen = { [node] = true }
+    local current = parent
+    while current do
+      if seen[current] then
+        return true
+      end
+      seen[current] = true
+      current = current.parent_candidate
+    end
+    return false
+  end
+
+  local linked = 0
+  for _, node in ipairs(nodes) do
+    local parent = node.parent_candidate
+    if parent and parent ~= node and not creates_cycle(node, parent) then
+      node.parent = parent
+      table.insert(parent.children, node)
+      linked = linked + 1
+    end
+  end
+
+  local function display_node(node, depth, ancestor_continues, is_last)
+    return {
+      thread = node.thread,
+      depth = depth,
+      is_last = is_last,
+      ancestor_continues = ancestor_continues,
+    }
+  end
+
+  if linked == 0 then
+    local flat = {}
+    for index, node in ipairs(nodes) do
+      table.insert(flat, display_node(node, 0, {}, index == #nodes))
+    end
+    return flat
+  end
+
+  local function update_latest(node)
+    local latest = node.index
+    for _, child in ipairs(node.children) do
+      latest = math.min(latest, update_latest(child))
+    end
+    node.latest_index = latest
+    return latest
+  end
+
+  local function sort_nodes(list)
+    table.sort(list, function(a, b)
+      if a.latest_index == b.latest_index then
+        return a.index < b.index
+      end
+      return a.latest_index < b.latest_index
+    end)
+    for _, node in ipairs(list) do
+      sort_nodes(node.children)
+    end
+  end
+
+  local roots = {}
+  for _, node in ipairs(nodes) do
+    if not node.parent then
+      table.insert(roots, node)
+    end
+  end
+  for _, root in ipairs(roots) do
+    update_latest(root)
+  end
+  sort_nodes(roots)
+
+  local flat = {}
+  local function walk(node, depth, ancestor_continues, is_last)
+    table.insert(flat, display_node(node, depth, ancestor_continues, is_last))
+    for index, child in ipairs(node.children) do
+      local child_ancestors = vim.list_slice(ancestor_continues)
+      table.insert(child_ancestors, depth > 0 and not is_last or false)
+      walk(child, depth + 1, child_ancestors, index == #node.children)
+    end
+  end
+  for index, root in ipairs(roots) do
+    walk(root, 0, {}, index == #roots)
+  end
+  return flat
+end
+
+local function tree_prefix(tree_node)
+  if not tree_node or (tree_node.depth or 0) == 0 then
+    return ""
+  end
+  local parts = {}
+  for _, continues in ipairs(tree_node.ancestor_continues or {}) do
+    table.insert(parts, continues and "│  " or "   ")
+  end
+  table.insert(parts, tree_node.is_last and "└─ " or "├─ ")
+  return table.concat(parts)
 end
 
 local function label_from_meta(meta)
@@ -255,6 +390,7 @@ local function preview_text(thread)
   add_detail(lines, "Messages", meta.message_count)
   add_detail(lines, "Updated", meta.updated)
   add_detail(lines, "Session", meta.session)
+  add_detail(lines, "Forked from", meta.parent_session)
   return table.concat(lines, "\n")
 end
 
@@ -268,6 +404,7 @@ local function format_item(item)
   ensure_highlights()
   local meta = item.coact_meta or thread_meta(item.thread or {})
   local chunks = {}
+  append(chunks, item.coact_tree_prefix, "CoactPickerTree")
   append(chunks, meta.icon .. " ", meta.icon_hl)
   append(chunks, truncate_display(meta.title, 36), "CoactPickerTitle")
   if meta.preview then
@@ -293,10 +430,12 @@ local function format_item(item)
   return chunks
 end
 
-local function picker_item(thread)
+local function picker_item(tree_node)
+  local thread = tree_node.thread
   local meta = thread_meta(thread)
+  local prefix = tree_prefix(tree_node)
   return {
-    text = label_from_meta(meta),
+    text = prefix .. label_from_meta(meta),
     preview = {
       text = preview_text(thread),
       ft = "markdown",
@@ -304,6 +443,8 @@ local function picker_item(thread)
     },
     thread = thread,
     coact_meta = meta,
+    coact_tree = tree_node,
+    coact_tree_prefix = prefix,
   }
 end
 
@@ -311,6 +452,8 @@ M._label = label
 M._preview_text = preview_text
 M._thread_meta = thread_meta
 M._format_item = format_item
+M._session_tree = session_tree
+M._tree_prefix = tree_prefix
 
 function M.threads()
   require("coact").list_threads(function(threads)
@@ -324,13 +467,16 @@ function M.threads()
       return
     end
 
+    local tree_nodes = session_tree(threads)
     local ok, snacks = pcall(require, "snacks")
     if ok and snacks.picker then
       ensure_highlights()
       snacks.picker.pick({
         title = provider_title .. " Threads",
-        items = vim.tbl_map(picker_item, threads),
+        items = vim.tbl_map(picker_item, tree_nodes),
         format = format_item,
+        matcher = { sort_empty = false },
+        sort = { fields = { "score:desc", "idx" } },
         preview = "preview",
         confirm = function(picker, item)
           picker:close()
@@ -340,12 +486,14 @@ function M.threads()
       return
     end
 
-    vim.ui.select(threads, {
+    vim.ui.select(tree_nodes, {
       prompt = provider_title .. " threads",
-      format_item = label,
-    }, function(thread)
-      if thread then
-        require("coact").resume(thread.id)
+      format_item = function(tree_node)
+        return tree_prefix(tree_node) .. label(tree_node.thread)
+      end,
+    }, function(tree_node)
+      if tree_node then
+        require("coact").resume(tree_node.thread.id)
       end
     end)
   end)

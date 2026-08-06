@@ -819,6 +819,7 @@ local function read_session_info(path, cwd_filter)
     return nil
   end
   local cwd = normalize_path(util.value(header.cwd)) or normalize_cwd()
+  local parent_session_path = normalize_path(util.value(header.parentSession))
   if cwd_filter and normalize_cwd(cwd_filter) ~= cwd then
     return nil
   end
@@ -863,6 +864,7 @@ local function read_session_info(path, cwd_filter)
     preview = first_message or title,
     sessionFile = path,
     sessionId = id,
+    parentSessionPath = parent_session_path,
     messageCount = message_count,
     model = model,
     modelProvider = model_provider,
@@ -891,6 +893,24 @@ local function list_local_sessions(cwd, opts)
       if info then
         table.insert(sessions, info)
       end
+    end
+  end
+  local by_path = {}
+  local function path_key(path)
+    path = normalize_path(path)
+    return path and (vim.uv.fs_realpath(path) or path) or nil
+  end
+  for _, session in ipairs(sessions) do
+    local key = path_key(session.sessionFile)
+    if key then
+      by_path[key] = session
+    end
+  end
+  for _, session in ipairs(sessions) do
+    local parent_key = path_key(session.parentSessionPath)
+    local parent = parent_key and by_path[parent_key] or nil
+    if parent and parent ~= session then
+      session.parentThreadId = parent.id
     end
   end
   table.sort(sessions, function(a, b)

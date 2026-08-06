@@ -199,9 +199,12 @@ To use Pi as the active provider:
 The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to
 Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
 commands, and normalizes Pi streaming, thinking, and tool events into the same
-renderer blocks used by the rest of coact.nvim. `/reasoning` queries Pi for the
-current model's available thinking levels when the picker opens, so
-model-declared holes and extended levels such as `max` are honored. Submitting
+renderer blocks used by the rest of coact.nvim. The thread picker reads Pi's
+`parentSession` metadata, groups forked session files beneath their parent with
+tree connectors, and keeps every fork independently selectable. `/reasoning`
+queries Pi for the current model's available thinking levels when the picker
+opens, so model-declared holes and extended levels such as `max` are honored.
+Submitting
 another prompt while Pi is generating queues it as a Pi `followUp` instead of
 failing with "Agent is already processing". Queued prompts remain visible once
 under a distinct `Queued request` header with queue state and FIFO position

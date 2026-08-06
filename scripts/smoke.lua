@@ -1350,7 +1350,7 @@ do
   vim.fn.mkdir(pi_session_dir, "p")
   local pi_old_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-16-54-901Z_pi-old.jsonl")
   local pi_new_session_file = vim.fs.joinpath(pi_session_dir, "2026-06-15T16-47-53-744Z_pi-new.jsonl")
-  local function write_pi_session(path, id, created, prompt, name, model_id, top_level_model)
+  local function write_pi_session(path, id, created, prompt, name, model_id, top_level_model, parent_session)
     local model_change = top_level_model
         and {
           type = "model_change",
@@ -1369,6 +1369,7 @@ do
         id = id,
         timestamp = created,
         cwd = pi_cwd,
+        parentSession = parent_session,
       }),
       vim.json.encode(model_change),
       vim.json.encode({
@@ -1395,7 +1396,16 @@ do
     }, path)
   end
   write_pi_session(pi_old_session_file, "pi-old", "2026-06-15T16:16:54.901Z", "old pi prompt", "Old Pi", "gpt-4o")
-  write_pi_session(pi_new_session_file, "pi-new", "2026-06-15T16:47:53.744Z", "new pi prompt", "New Pi", "gpt-5", true)
+  write_pi_session(
+    pi_new_session_file,
+    "pi-new",
+    "2026-06-15T16:47:53.744Z",
+    "new pi prompt",
+    "New Pi",
+    "gpt-5",
+    true,
+    pi_old_session_file
+  )
   local resolved_pi_session_dir, pi_filters_by_cwd = pi_provider._session_dir_for_cwd(pi_cwd)
   assert(resolved_pi_session_dir == pi_session_dir, "Pi provider should use configured session_dir for history")
   assert(pi_filters_by_cwd == true, "custom Pi session_dir should filter sessions by cwd")
@@ -1403,6 +1413,10 @@ do
   assert(#local_pi_sessions == 2, "Pi provider should list local JSONL sessions for the workspace")
   assert(local_pi_sessions[1].id == "pi:pi-new", "Pi local sessions should be sorted by newest activity")
   assert(local_pi_sessions[1].sessionFile == pi_new_session_file, "Pi threads should retain the native session file")
+  assert(
+    local_pi_sessions[1].parentSessionPath == pi_old_session_file and local_pi_sessions[1].parentThreadId == "pi:pi-old",
+    "Pi thread history should retain and resolve parentSession fork lineage"
+  )
   assert(local_pi_sessions[1].preview:match("new pi prompt"), "Pi thread preview should use the first user message")
   assert(local_pi_sessions[1].model == "openai/gpt-5", "Pi thread history should retain model metadata")
   assert(local_pi_sessions[1].reasoningEffort == "high", "Pi thread history should retain thinking metadata")
@@ -3894,6 +3908,19 @@ do
   coact.list_threads = function(callback)
     callback({
       {
+        id = "pi:picker-fork",
+        name = "Forked Pi",
+        cwd = "/tmp/pi-picker",
+        model = "openai/gpt-5",
+        modelProvider = "openai",
+        sessionFile = "/tmp/pi-picker/fork.jsonl",
+        parentSessionPath = "/tmp/pi-picker/session.jsonl",
+        parentThreadId = "pi:picker-session",
+        preview = "fork continuation",
+        messageCount = 5,
+        updated_at = "2026-07-03T11:20:00Z",
+      },
+      {
         id = "pi:picker-session",
         name = "Picker Pi",
         cwd = "/tmp/pi-picker",
@@ -3913,7 +3940,7 @@ do
     picker = {
       pick = function(opts)
         picked_opts = opts
-        opts.confirm({ close = function() end }, opts.items[1])
+        opts.confirm({ close = function() end }, opts.items[2])
       end,
     },
   }
@@ -3925,8 +3952,23 @@ do
   assert(picked_opts and picked_opts.title == "Pi Threads", "thread picker title should use the active provider")
   assert(picked_opts.preview == "preview", "thread picker should use item preview data for Snacks")
   assert(
-    picked_opts.items[1] and picked_opts.items[1].text and not picked_opts.items[1].text:match("pi:picker%-session"),
-    "thread picker selection text should hide raw provider ids"
+    picked_opts.matcher
+      and picked_opts.matcher.sort_empty == false
+      and vim.deep_equal(picked_opts.sort.fields, { "score:desc", "idx" }),
+    "thread picker should preserve threaded order until the user searches"
+  )
+  assert(
+    picked_opts.items[1]
+      and picked_opts.items[1].thread.id == "pi:picker-session"
+      and picked_opts.items[2]
+      and picked_opts.items[2].thread.id == "pi:picker-fork",
+    "thread picker should group a newer fork beneath its parent session"
+  )
+  assert(
+    picked_opts.items[1].text
+      and not picked_opts.items[1].text:match("pi:picker%-session")
+      and picked_opts.items[2].text:find("   └─ ", 1, true) == 1,
+    "thread picker selection text should hide raw provider ids and show fork connectors"
   )
   local formatted = picked_opts.format(picked_opts.items[1])
   local formatted_text = table.concat(
@@ -3943,6 +3985,15 @@ do
     "thread picker should render modern summary rows without raw ids"
   )
   assert(formatted[2] and formatted[2][2] == "CoactPickerTitle", "thread picker rows should carry Coact highlights")
+  local fork_formatted = picked_opts.format(picked_opts.items[2])
+  assert(
+    fork_formatted[1]
+      and fork_formatted[1][1] == "   └─ "
+      and fork_formatted[1][2] == "CoactPickerTree"
+      and fork_formatted[3]
+      and fork_formatted[3][2] == "CoactPickerTitle",
+    "forked thread rows should render tree connectors before their status and title"
+  )
   assert(
     picked_opts.items[1]
       and picked_opts.items[1].preview
@@ -3951,7 +4002,11 @@ do
       and picked_opts.items[1].preview.text:match("first picker prompt"),
     "thread picker items should expose styled textual previews instead of requiring a file"
   )
-  assert(resumed_thread_id == "pi:picker-session", "thread picker should resume the selected provider thread")
+  assert(
+    picked_opts.items[2].preview.text:match("%*%*Forked from%*%* `/tmp/pi%-picker/session%.jsonl`"),
+    "forked thread previews should identify their parent session"
+  )
+  assert(resumed_thread_id == "pi:picker-fork", "thread picker should resume a selected forked session")
 end
 
 local rpc = require("coact.rpc")
