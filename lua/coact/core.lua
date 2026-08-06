@@ -298,6 +298,17 @@ local function agent_label()
   return providers.agent_label()
 end
 
+local function refresh_completed_pi_compaction(params)
+  local provider = providers.current()
+  if type(provider.on_compaction_completed) ~= "function" then
+    return
+  end
+  local ok, err = pcall(provider.on_compaction_completed, params)
+  if not ok then
+    util.notify("coact.nvim Pi compaction refresh failed: " .. tostring(err), vim.log.levels.WARN)
+  end
+end
+
 local function queued_request(request)
   return type(request) == "table" and (request.streaming_behavior or request.streamingBehavior) ~= nil
 end
@@ -849,11 +860,16 @@ end
 
 handlers["pi/agent_settled"] = function(params)
   local thread = state.ensure_thread(params.threadId)
+  local pending_compaction_refresh = thread.pi_compaction_refresh
+  thread.pi_compaction_refresh = nil
   thread.pi_agent_active = false
   thread.active_turn_id = nil
   thread.pi_queue = { steering = {}, follow_up = {} }
   state.clear_thread_pending_requests(thread)
   set_generation(thread, "idle", nil)
+  if pending_compaction_refresh then
+    refresh_completed_pi_compaction(pending_compaction_refresh)
+  end
   schedule(params.threadId)
 end
 
@@ -867,13 +883,53 @@ handlers["pi/queue_update"] = function(params)
 end
 
 handlers["pi/compaction_start"] = function(params)
-  append_timeline(
-    "pi/compaction_start",
-    params,
-    "Pi compaction started",
-    "running",
-    "reason: " .. tostring(params.reason or "unknown")
-  )
+  local thread = state.ensure_thread(params.threadId)
+  thread.pi_compaction_active = true
+  set_generation(thread, "summarizing", "Pi is compacting context...")
+  schedule(params.threadId)
+end
+
+handlers["pi/compaction_end"] = function(params)
+  local thread = state.ensure_thread(params.threadId)
+  thread.pi_compaction_active = false
+  local has_pending_request = #state.get_thread_pending_requests(thread) > 0
+  local result = util.value(params.result)
+  if type(result) == "table" then
+    if util.value(params.willRetry) == true or thread.pi_agent_active or has_pending_request then
+      thread.pi_compaction_refresh = vim.deepcopy(params)
+    else
+      refresh_completed_pi_compaction(params)
+    end
+  elseif util.value(params.aborted) == true then
+    append_timeline(
+      "pi/compaction_end",
+      params,
+      "Pi compaction cancelled",
+      "cancelled",
+      "Context compaction was cancelled."
+    )
+  else
+    append_timeline(
+      "pi/compaction_end",
+      params,
+      "Pi compaction failed",
+      "error",
+      tostring(util.value(params.errorMessage) or "No compaction summary was produced.")
+    )
+  end
+
+  if util.value(params.willRetry) == true then
+    set_generation(thread, "waiting_backend", "Pi is retrying after compaction...")
+  elseif has_pending_request then
+    local message = has_queued_request(thread) and (agent_label() .. " has a queued follow-up...")
+      or (agent_label() .. " is thinking...")
+    set_generation(thread, "submitted", message)
+  elseif thread.pi_agent_active then
+    set_generation(thread, "waiting_backend", "Pi is settling...")
+  else
+    set_generation(thread, "idle", nil)
+  end
+  schedule(params.threadId)
 end
 
 handlers["pi/auto_retry_start"] = function(params)

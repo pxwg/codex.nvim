@@ -457,14 +457,43 @@ function normalizeTreeSelection(selection) {
 }
 
 function branchSnapshotPayload(ctx) {
-  const entries = (ctx.sessionManager.getBranch() || [])
-    .filter((entry) => entry?.type === "message" && (entry.message?.role === "user" || entry.message?.role === "assistant"))
-    .map((entry) => ({
-      id: String(entry.id),
-      parentId: entry.parentId ?? undefined,
-      role: entry.message.role,
-      text: textContent(entry.message.content),
-    }));
+  const branch = typeof ctx.sessionManager.buildContextEntries === "function"
+    ? ctx.sessionManager.buildContextEntries()
+    : ctx.sessionManager.getBranch();
+  const entries = (branch || [])
+    .map((entry) => {
+      if (entry?.type === "message" && (entry.message?.role === "user" || entry.message?.role === "assistant")) {
+        return {
+          id: String(entry.id),
+          parentId: entry.parentId ?? undefined,
+          role: entry.message.role,
+          text: textContent(entry.message.content),
+          timestamp: entry.timestamp,
+        };
+      }
+      if (entry?.type === "branch_summary") {
+        return {
+          id: String(entry.id),
+          parentId: entry.parentId ?? undefined,
+          role: "branchSummary",
+          text: String(entry.summary ?? ""),
+          timestamp: entry.timestamp,
+          fromId: entry.fromId,
+        };
+      }
+      if (entry?.type === "compaction") {
+        return {
+          id: String(entry.id),
+          parentId: entry.parentId ?? undefined,
+          role: "compactionSummary",
+          text: String(entry.summary ?? ""),
+          timestamp: entry.timestamp,
+          tokensBefore: entry.tokensBefore,
+        };
+      }
+      return undefined;
+    })
+    .filter(Boolean);
   return {
     __coactNvimPiBranchSnapshot: true,
     leafId: ctx.sessionManager.getLeafId(),

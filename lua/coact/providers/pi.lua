@@ -653,6 +653,13 @@ local function text_content(content)
   return table.concat(lines, "\n")
 end
 
+local snapshot_roles = {
+  user = true,
+  assistant = true,
+  branchSummary = true,
+  compactionSummary = true,
+}
+
 local function normalize_branch_snapshot(payload)
   if type(payload) ~= "table" then
     return nil
@@ -661,12 +668,15 @@ local function normalize_branch_snapshot(payload)
   for _, entry in ipairs(type(payload.entries) == "table" and payload.entries or {}) do
     local role = util.value(entry.role)
     local id = util.value(entry.id)
-    if id and (role == "user" or role == "assistant") then
+    if id and snapshot_roles[role] then
       table.insert(entries, {
         id = tostring(id),
         parentId = util.value(entry.parentId or entry.parent_id),
         role = role,
         text = tostring(util.value(entry.text) or ""),
+        timestamp = util.value(entry.timestamp),
+        fromId = util.value(entry.fromId or entry.from_id),
+        tokensBefore = util.value(entry.tokensBefore or entry.tokens_before),
       })
     end
   end
@@ -720,10 +730,17 @@ local function snapshot_cursor(snapshot)
   local cursor = {
     user = {},
     assistant = {},
-    indices = { user = 1, assistant = 1 },
+    branchSummary = {},
+    compactionSummary = {},
+    indices = {
+      user = 1,
+      assistant = 1,
+      branchSummary = 1,
+      compactionSummary = 1,
+    },
   }
   for _, entry in ipairs(snapshot and snapshot.entries or {}) do
-    if entry.role == "user" or entry.role == "assistant" then
+    if snapshot_roles[entry.role] then
       table.insert(cursor[entry.role], entry)
     end
   end
@@ -731,7 +748,7 @@ local function snapshot_cursor(snapshot)
 end
 
 local function next_snapshot_entry(cursor, role, text)
-  if type(cursor) ~= "table" or (role ~= "user" and role ~= "assistant") then
+  if type(cursor) ~= "table" or not snapshot_roles[role] then
     return nil
   end
   local entries = cursor[role] or {}
@@ -762,6 +779,9 @@ local function role_for_item(item)
   if item.type == "agentMessage" then
     return "assistant"
   end
+  if item.type == "branchSummary" or item.type == "compactionSummary" then
+    return item.type
+  end
   return nil
 end
 
@@ -772,7 +792,7 @@ local function item_snapshot_text(item)
   if item.type == "userMessage" then
     return text_content(item.content)
   end
-  if item.type == "agentMessage" then
+  if item.type == "agentMessage" or item.type == "branchSummary" or item.type == "compactionSummary" then
     return tostring(item.text or "")
   end
   return ""
@@ -1235,7 +1255,11 @@ local function read_current_thread(rpc, params, callback, opts)
       request_branch_snapshot(rpc, params, function(_, branch_snapshot)
         rpc._request_message("get_messages", {}, function(messages_err, messages_result)
           if messages_err then
-            callback(nil, { thread = thread })
+            if opts.require_messages == true then
+              callback(messages_err, nil)
+            else
+              callback(nil, { thread = thread })
+            end
             return
           end
           thread.turns =
@@ -1507,6 +1531,48 @@ function M.custom_request(rpc, method, params, callback)
   return false
 end
 
+local function refresh_current_thread(rpc, params, callback)
+  params = params or {}
+  callback = callback or function() end
+  read_current_thread(rpc, params, function(err, result)
+    if err then
+      callback(err, nil)
+      return
+    end
+    local payload = result and result.thread
+    if not payload then
+      callback({ message = "Pi compaction refresh returned no thread" }, nil)
+      return
+    end
+    local ok, coact_state = pcall(require, "coact.state")
+    if not ok then
+      callback({ message = "coact state is unavailable after Pi compaction" }, nil)
+      return
+    end
+    local thread = coact_state.update_thread_from_payload(payload)
+    local buffers_ok, buffers = pcall(require, "coact.buffers")
+    if buffers_ok and thread and thread.bufnr then
+      buffers.schedule_render(thread.id)
+    end
+    callback(nil, thread)
+  end, { replace_turns = true, require_messages = true })
+end
+
+function M.on_compaction_completed(params)
+  if not (params and type(params.result) == "table") then
+    return
+  end
+  local ok, rpc = pcall(require, "coact.rpc")
+  if not (ok and rpc.is_running and rpc.is_running()) then
+    return
+  end
+  refresh_current_thread(rpc, { threadId = params.threadId or current_thread_id() }, function(err)
+    if err then
+      util.notify("Pi compaction history refresh failed: " .. tostring(err.message or err), vim.log.levels.WARN)
+    end
+  end)
+end
+
 function M.on_generation_completed(payload)
   local thread = payload and payload.thread or nil
   local thread_id = thread and thread.id or runtime.current_thread_id or current_thread_id()
@@ -1708,9 +1774,39 @@ local function notifications(entries)
   return out
 end
 
+local function ensure_history_turn(turns, turn_index)
+  local turn = turns[#turns]
+  if turn then
+    return turn, turn_index
+  end
+  turn_index = turn_index + 1
+  turn = { id = ("pi-history-%d"):format(turn_index), items = {} }
+  table.insert(turns, turn)
+  return turn, turn_index
+end
+
+local function history_summary_item(message, role, summary_index, tree_entry)
+  local summary = tostring(util.value(message.summary) or "")
+  local identity = tree_entry and tree_entry.id
+    or table.concat({ role, tostring(util.value(message.timestamp) or "unknown"), tostring(summary_index) }, ":")
+  return {
+    id = "pi-history-summary:" .. tostring(identity),
+    type = role,
+    status = "completed",
+    text = summary,
+    fromId = util.value(message.fromId or message.from_id) or (tree_entry and tree_entry.fromId),
+    tokensBefore = util.value(message.tokensBefore or message.tokens_before)
+      or (tree_entry and tree_entry.tokensBefore),
+    timestamp = util.value(message.timestamp) or (tree_entry and tree_entry.timestamp),
+    treeEntryId = tree_entry and tree_entry.id or nil,
+    treeParentId = tree_entry and tree_entry.parentId or nil,
+  }
+end
+
 function M._turns_from_messages(messages, thread_id, branch_snapshot)
   local turns = {}
   local turn_index = 0
+  local summary_index = 0
   local tree_cursor = snapshot_cursor(branch_snapshot)
   for _, message in ipairs(type(messages) == "table" and messages or {}) do
     if message.role == "user" then
@@ -1737,12 +1833,8 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
       })
     elseif message.role == "assistant" then
       local tree_entry = next_snapshot_entry(tree_cursor, "assistant", text_content(message.content))
-      local turn = turns[#turns]
-      if not turn then
-        turn_index = turn_index + 1
-        turn = { id = ("pi-history-%d"):format(turn_index), items = {} }
-        table.insert(turns, turn)
-      end
+      local turn
+      turn, turn_index = ensure_history_turn(turns, turn_index)
       local old_turn = runtime.active_turn_id
       runtime.active_turn_id = turn.id
       vim.list_extend(turn.items, message_items(message, "completed", tree_entry))
@@ -1752,6 +1844,13 @@ function M._turns_from_messages(messages, thread_id, branch_snapshot)
       if turn then
         table.insert(turn.items, tool_item(message.toolCallId, message.toolName, {}, "completed", message))
       end
+    elseif message.role == "branchSummary" or message.role == "compactionSummary" then
+      summary_index = summary_index + 1
+      local summary = tostring(util.value(message.summary) or "")
+      local tree_entry = next_snapshot_entry(tree_cursor, message.role, summary)
+      local turn
+      turn, turn_index = ensure_history_turn(turns, turn_index)
+      table.insert(turn.items, history_summary_item(message, message.role, summary_index, tree_entry))
     end
   end
   return turns
@@ -1878,10 +1977,13 @@ function M.decode_notification(message)
   end
 
   if message.type == "compaction_end" then
-    return notification("thread/compacted", {
+    return notification("pi/compaction_end", {
       threadId = thread_id,
       result = message.result,
       reason = message.reason,
+      aborted = message.aborted,
+      willRetry = message.willRetry,
+      errorMessage = message.errorMessage,
     })
   end
 
@@ -2344,5 +2446,7 @@ M._resolve_session_file = resolve_session_file
 M._normalize_model = normalize_model
 M._message_items = message_items
 M._tool_update_delta = tool_update_delta
+M._normalize_branch_snapshot = normalize_branch_snapshot
+M._refresh_current_thread = refresh_current_thread
 
 return M

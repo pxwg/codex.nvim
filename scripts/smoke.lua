@@ -464,6 +464,12 @@ do
       and pi_extension_source:find("result = await ctx.navigateTree", 1, true)
       and pi_extension_source:find("ctx.ui.setStatus(treeSummaryStatusKey, undefined);", 1, true),
     "Pi tree navigation should bracket branch summarization with an observable status lifecycle"
+  )
+  assert(
+    pi_extension_source:find("ctx.sessionManager.buildContextEntries()", 1, true)
+      and pi_extension_source:find('role: "branchSummary"', 1, true)
+      and pi_extension_source:find('role: "compactionSummary"', 1, true),
+    "Pi branch snapshots should retain active branch and compaction summary entry identities"
   );
   (function()
     local pi_tree = require("coact.providers.pi_tree")
@@ -1641,6 +1647,281 @@ do
         and pi_tree_reveal_result.treeAction.id == "entry-local-reveal",
       "Pi thread/tree local reveal should skip native branch refresh"
     )
+  end)();
+  (function()
+    local summary_messages = {
+      {
+        role = "compactionSummary",
+        summary = "## Goal\nPreserve compacted work",
+        tokensBefore = 120000,
+        timestamp = 1000,
+      },
+      {
+        role = "user",
+        content = { { type = "text", text = "kept prompt" } },
+      },
+      {
+        role = "assistant",
+        content = { { type = "text", text = "kept answer" } },
+      },
+      {
+        role = "branchSummary",
+        summary = table.concat({
+          "The user explored a different conversation branch before returning here.",
+          "",
+          "## Goal",
+          "Explore the sibling branch",
+        }, "\n"),
+        fromId = "entry-kept-answer",
+        timestamp = 2000,
+      },
+    }
+    local summary_snapshot = {
+      entries = {
+        {
+          id = "entry-compaction",
+          parentId = "entry-old-leaf",
+          role = "compactionSummary",
+          text = summary_messages[1].summary,
+          tokensBefore = 120000,
+          timestamp = "1970-01-01T00:00:01.000Z",
+        },
+        { id = "entry-kept-user", role = "user", text = "kept prompt" },
+        { id = "entry-kept-answer", role = "assistant", text = "kept answer" },
+        {
+          id = "entry-branch-summary",
+          parentId = "entry-kept-answer",
+          role = "branchSummary",
+          text = summary_messages[4].summary,
+          fromId = "entry-kept-answer",
+          timestamp = "1970-01-01T00:00:02.000Z",
+        },
+      },
+    }
+    local summary_turns = pi_provider._turns_from_messages(summary_messages, "pi:summary-blocks", summary_snapshot)
+    local null_summary_turns = pi_provider._turns_from_messages({
+      {
+        role = "compactionSummary",
+        summary = vim.NIL,
+        tokensBefore = vim.NIL,
+        timestamp = vim.NIL,
+      },
+    }, "pi:null-summary")
+    assert(
+      null_summary_turns[1].items[1].text == "" and null_summary_turns[1].items[1].tokensBefore == nil,
+      "Pi summary normalization should treat RPC null fields as absent"
+    )
+    assert(
+      #summary_turns == 2
+        and summary_turns[1].items[1].type == "compactionSummary"
+        and summary_turns[1].items[1].treeEntryId == "entry-compaction"
+        and summary_turns[2].items[1].type == "userMessage"
+        and summary_turns[2].items[#summary_turns[2].items].type == "branchSummary"
+        and summary_turns[2].items[#summary_turns[2].items].treeEntryId == "entry-branch-summary",
+      "Pi history normalization should retain compaction and branch summaries with native tree ids"
+    )
+
+    local summary_thread = state.update_thread_from_payload({
+      id = "pi:summary-blocks",
+      replaceTurns = true,
+      turns = summary_turns,
+    })
+    local summary_render = require("coact.ui.render")
+    local summary_blocks = summary_render.select_render_tree(summary_thread)
+    assert(
+      #summary_blocks == 4
+        and summary_blocks[1].type == "CompactionSummaryBlock"
+        and summary_blocks[2].type == "UserBlock"
+        and summary_blocks[3].type == "AssistantBlock"
+        and summary_blocks[4].type == "BranchSummaryBlock",
+      "Pi compaction summaries should precede retained context while branch summaries follow their navigation anchor"
+    )
+    local summary_buf = vim.api.nvim_create_buf(false, true)
+    state.bind_buffer(summary_thread, summary_buf)
+    summary_render.render(summary_thread)
+    assert(
+      #summary_thread.placeholder_marks == 2
+        and summary_thread.placeholder_marks[1].title == "Context compacted"
+        and summary_thread.placeholder_marks[2].title == "Branch summary",
+      "Pi summaries should render as distinct collapsed placeholder blocks"
+    )
+    local collapsed_summary_marks = vim.inspect(vim.tbl_map(function(mark)
+      return vim.api.nvim_buf_get_extmark_by_id(
+        summary_buf,
+        summary_render.namespace(),
+        mark.extmark_id,
+        { details = true }
+      )
+    end, summary_thread.placeholder_marks))
+    assert(
+      collapsed_summary_marks:match("120000 tokens before")
+        and collapsed_summary_marks:match("Preserve compacted work")
+        and collapsed_summary_marks:match("Explore the sibling branch"),
+      "collapsed Pi summary rows should expose token and goal previews"
+    )
+    for _, mark in ipairs(summary_thread.placeholder_marks) do
+      summary_thread.expanded_blocks[mark.key] = true
+    end
+    summary_render.render(summary_thread)
+    local expanded_summary_marks = vim.inspect(vim.tbl_map(function(mark)
+      return vim.api.nvim_buf_get_extmark_by_id(
+        summary_buf,
+        summary_render.namespace(),
+        mark.extmark_id,
+        { details = true }
+      )
+    end, summary_thread.placeholder_marks))
+    assert(
+      expanded_summary_marks:match("Compacted from 120000 tokens")
+        and expanded_summary_marks:match("Preserve compacted work")
+        and expanded_summary_marks:match("Explore the sibling branch"),
+      "expanded Pi summary rows should expose their full summary bodies"
+    )
+    local summary_detail = require("coact.ui.detail")
+    local compaction_detail = table.concat(summary_detail.lines_for(summary_blocks[1]), "\n")
+    local branch_detail = table.concat(summary_detail.lines_for(summary_blocks[4]), "\n")
+    assert(
+      compaction_detail:match("# Context compacted")
+        and compaction_detail:match("tokens%-before: 120000")
+        and branch_detail:match("# Branch summary")
+        and branch_detail:match("from%-id: entry%-kept%-answer"),
+      "Pi summary detail pages should preserve their distinct semantics"
+    )
+
+    local root_summary_turns = pi_provider._turns_from_messages({
+      { role = "branchSummary", summary = "root branch summary", timestamp = 3000 },
+    }, "pi:root-summary")
+    local root_summary_thread = state.update_thread_from_payload({
+      id = "pi:root-summary",
+      replaceTurns = true,
+      turns = root_summary_turns,
+    })
+    local root_summary_blocks = summary_render.select_render_tree(root_summary_thread)
+    assert(
+      #root_summary_blocks == 1 and root_summary_blocks[1].type == "BranchSummaryBlock",
+      "a root-navigation branch summary should become the first transcript block while the prompt returns to the composer"
+    )
+
+    pi_provider._runtime.current_thread_id = "pi:summary-lifecycle"
+    local compaction_notification = pi_provider.decode_notification({
+      type = "compaction_end",
+      reason = "manual",
+      result = {
+        summary = "refreshed compacted context",
+        tokensBefore = 64000,
+      },
+      aborted = false,
+      willRetry = false,
+    })
+    assert(
+      compaction_notification
+        and compaction_notification.message.method == "pi/compaction_end"
+        and compaction_notification.message.params.result.summary == "refreshed compacted context",
+      "Pi compaction completion should retain its summary for a durable history refresh"
+    )
+    local original_compaction_hook = pi_provider.on_compaction_completed
+    local observed_compaction = nil
+    pi_provider.on_compaction_completed = function(params)
+      observed_compaction = params
+    end
+    local compaction_lifecycle_thread = state.ensure_thread("pi:summary-lifecycle")
+    compaction_lifecycle_thread.pi_agent_active = false
+    state.clear_thread_pending_requests(compaction_lifecycle_thread)
+    require("coact.core").handle_notification({
+      method = "pi/compaction_start",
+      params = { threadId = "pi:summary-lifecycle", reason = "manual" },
+    })
+    assert(
+      compaction_lifecycle_thread.generation == "summarizing"
+        and compaction_lifecycle_thread.status_message == "Pi is compacting context...",
+      "Pi compaction should use the observable summarizing lifecycle"
+    )
+    require("coact.core").handle_notification(compaction_notification.message)
+    local immediate_compaction = observed_compaction
+    observed_compaction = nil
+    compaction_lifecycle_thread.pi_agent_active = true
+    require("coact.core").handle_notification({
+      method = "pi/compaction_end",
+      params = {
+        threadId = "pi:summary-lifecycle",
+        reason = "overflow",
+        result = { summary = "deferred compacted context", tokensBefore = 128000 },
+        willRetry = true,
+      },
+    })
+    assert(
+      observed_compaction == nil and compaction_lifecycle_thread.pi_compaction_refresh,
+      "active Pi compaction should defer replacement until retry and queued continuation events settle"
+    )
+    require("coact.core").handle_notification({
+      method = "pi/agent_settled",
+      params = { threadId = "pi:summary-lifecycle" },
+    })
+    local deferred_compaction = observed_compaction
+    pi_provider.on_compaction_completed = original_compaction_hook
+    assert(
+      immediate_compaction
+        and immediate_compaction.result.summary == "refreshed compacted context"
+        and deferred_compaction
+        and deferred_compaction.result.summary == "deferred compacted context"
+        and compaction_lifecycle_thread.generation == "idle",
+      "successful Pi compaction should trigger branch replacement instead of a generic timeline row"
+    )
+
+    local refresh_thread = state.ensure_thread("pi:summary-refresh")
+    state.upsert_item("pi:summary-refresh", "old-turn", {
+      id = "stale-pre-compaction-item",
+      type = "agentMessage",
+      text = "stale pre-compaction history",
+    })
+    local refresh_calls = {}
+    local refreshed_thread = nil
+    pi_provider._refresh_current_thread({
+      _request_message = function(method, params, callback)
+        table.insert(refresh_calls, method)
+        if method == "get_state" then
+          callback(nil, { sessionId = "summary-refresh", sessionName = "Summary refresh" })
+        elseif method == "get_session_stats" then
+          callback(nil, { tokens = { total = 42 } })
+        elseif method == "prompt" then
+          assert(params.message == "/coact-nvim-branch-snapshot")
+          pi_provider._runtime.branch_snapshot = {
+            entries = {
+              {
+                id = "refresh-compaction-entry",
+                role = "compactionSummary",
+                text = "refreshed compacted context",
+                tokensBefore = 64000,
+              },
+            },
+          }
+          callback(nil, {})
+        elseif method == "get_messages" then
+          callback(nil, {
+            messages = {
+              {
+                role = "compactionSummary",
+                summary = "refreshed compacted context",
+                tokensBefore = 64000,
+              },
+            },
+          })
+        else
+          error("unexpected Pi compaction refresh request: " .. tostring(method))
+        end
+      end,
+    }, { threadId = "pi:summary-refresh" }, function(err, thread)
+      assert(not err, "Pi compaction refresh should succeed")
+      refreshed_thread = thread
+    end)
+    assert(
+      refreshed_thread
+        and refreshed_thread.items["stale-pre-compaction-item"] == nil
+        and refreshed_thread.items[refreshed_thread.item_order[1]].type == "compactionSummary"
+        and vim.deep_equal(refresh_calls, { "get_state", "get_session_stats", "prompt", "get_messages" }),
+      "Pi compaction refresh should replace stale turns with the compaction-aware active context"
+    )
+    vim.api.nvim_buf_delete(summary_buf, { force = true })
   end)();
   (function()
     pi_provider._runtime.current_thread_id = "pi:smoke-session"

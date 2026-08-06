@@ -27,6 +27,8 @@ local foldable_types = {
 
 local placeholder_types = {
   ActivitySummaryBlock = true,
+  BranchSummaryBlock = true,
+  CompactionSummaryBlock = true,
   ReasoningBlock = true,
   ToolCallBlock = true,
   PatchBlock = true,
@@ -66,6 +68,12 @@ local composer_trailing_punctuation = {
 
 local stream_decoration_by_type = {
   ActivitySummaryBlock = { kind = "thinking", marker = "▎ ", hl_group = "CoactStreamPlan" },
+  BranchSummaryBlock = { kind = "branch_summary", marker = "↳ ", hl_group = "CoactStreamBranchSummary" },
+  CompactionSummaryBlock = {
+    kind = "compaction_summary",
+    marker = "◇ ",
+    hl_group = "CoactStreamCompactionSummary",
+  },
   ToolCallBlock = { kind = "tool", marker = "▌ ", hl_group = "CoactStreamTool" },
   PatchBlock = { kind = "patch", marker = "▌ ", hl_group = "CoactStreamPatch" },
   AgentTimelineBlock = { kind = "agent", marker = "▎ ", hl_group = "CoactStreamAgent" },
@@ -88,6 +96,8 @@ local function define_highlights()
   vim.api.nvim_set_hl(0, "CoactComposerContext", { default = true, link = "Constant" })
   vim.api.nvim_set_hl(0, "CoactStreamTool", { default = true, link = "Comment" })
   vim.api.nvim_set_hl(0, "CoactStreamPatch", { default = true, link = "DiagnosticWarn" })
+  vim.api.nvim_set_hl(0, "CoactStreamBranchSummary", { default = true, link = "DiagnosticWarn" })
+  vim.api.nvim_set_hl(0, "CoactStreamCompactionSummary", { default = true, link = "Special" })
   vim.api.nvim_set_hl(0, "CoactStreamAgent", { default = true, link = "DiagnosticOk" })
   vim.api.nvim_set_hl(0, "CoactStreamRaw", { default = true, link = "DiagnosticWarn" })
   vim.api.nvim_set_hl(0, "CoactStreamPlan", { default = true, link = "DiagnosticHint" })
@@ -231,6 +241,33 @@ local function line_count(value)
   end
   local _, count = value:gsub("\n", "")
   return count + 1
+end
+
+local function summary_preview(value)
+  local fallback = ""
+  local in_goal = false
+  for _, line in ipairs(util.split_lines(value)) do
+    local text = util.trim(line)
+    if text:match("^##%s+Goal%s*$") then
+      in_goal = true
+    elseif in_goal and text:match("^##%s+") then
+      in_goal = false
+    elseif text ~= "" and not text:match("^#+%s*") then
+      text = text:gsub("^[-*]%s+", ""):gsub("^%[[ xX]%]%s*", "")
+      if in_goal then
+        return truncate_display(compact_text(text), 88)
+      end
+      if fallback == "" and not text:match("^The user explored a different conversation branch") then
+        fallback = text
+      end
+    end
+  end
+  return truncate_display(compact_text(fallback), 88)
+end
+
+local function summary_line_meta(block)
+  local count = line_count(events.block_text(block))
+  return count > 0 and (tostring(count) .. " line" .. (count == 1 and "" or "s")) or nil
 end
 
 local function virtual_block_config()
@@ -422,6 +459,21 @@ local function placeholder_meta(block)
     table.insert(meta, 1, block.state or "finished")
     return meta
   end
+  if block.type == "BranchSummaryBlock" or block.type == "CompactionSummaryBlock" then
+    local meta = {}
+    if block.type == "CompactionSummaryBlock" and tonumber(block.tokens_before) then
+      table.insert(meta, tostring(math.floor(tonumber(block.tokens_before) + 0.5)) .. " tokens before")
+    end
+    local preview = summary_preview(events.block_text(block))
+    if preview ~= "" then
+      table.insert(meta, preview)
+    end
+    local lines = summary_line_meta(block)
+    if lines then
+      table.insert(meta, lines)
+    end
+    return meta
+  end
   if block.type == "ReasoningBlock" then
     local text = events.block_text(block)
     if text == "" then
@@ -461,6 +513,12 @@ local function placeholder_title(block)
   if block.type == "ActivitySummaryBlock" then
     return "Thinking finished"
   end
+  if block.type == "BranchSummaryBlock" then
+    return "Branch summary"
+  end
+  if block.type == "CompactionSummaryBlock" then
+    return "Context compacted"
+  end
   if block.type == "ReasoningBlock" then
     return "Reasoning" .. (block.state and (" [" .. block.state .. "]") or "")
   end
@@ -482,6 +540,18 @@ end
 local function placeholder_body_lines(block)
   if block.type == "ActivitySummaryBlock" then
     return activity_summary.lines(block.children)
+  end
+  if block.type == "BranchSummaryBlock" then
+    return util.split_lines(events.block_text(block))
+  end
+  if block.type == "CompactionSummaryBlock" then
+    local lines = {}
+    if tonumber(block.tokens_before) then
+      table.insert(lines, ("Compacted from %d tokens."):format(math.floor(tonumber(block.tokens_before) + 0.5)))
+      table.insert(lines, "")
+    end
+    vim.list_extend(lines, util.split_lines(events.block_text(block)))
+    return lines
   end
   if block.type == "ReasoningBlock" or block.type == "PlanBlock" or block.type == "AgentTimelineBlock" then
     return util.split_lines(events.block_text(block))

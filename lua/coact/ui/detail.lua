@@ -44,6 +44,12 @@ local function block_title(block)
   if block.type == "ActivitySummaryBlock" then
     return "Thinking finished"
   end
+  if block.type == "BranchSummaryBlock" then
+    return "Branch summary"
+  end
+  if block.type == "CompactionSummaryBlock" then
+    return "Context compacted"
+  end
   if block.type == "AgentTimelineBlock" then
     return "Agent: " .. tostring(block.title or "event")
   end
@@ -73,6 +79,12 @@ function M.lines_for(block)
   end
   if block and block.state then
     table.insert(lines, "state: " .. tostring(block.state))
+  end
+  if block and block.type == "BranchSummaryBlock" and block.from_id then
+    table.insert(lines, "from-id: " .. tostring(block.from_id))
+  end
+  if block and block.type == "CompactionSummaryBlock" and block.tokens_before then
+    table.insert(lines, "tokens-before: " .. tostring(block.tokens_before))
   end
   table.insert(lines, "")
   table.insert(lines, "---")

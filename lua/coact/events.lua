@@ -331,6 +331,23 @@ local function collab_agent_block(item, turn_id)
   }
 end
 
+local function context_summary_block(item, turn_id, block_type, summary_kind)
+  return {
+    type = block_type,
+    message_id = turn_id,
+    item_id = item.id,
+    treeEntryId = util.value(item.treeEntryId or item.tree_entry_id),
+    treeParentId = util.value(item.treeParentId or item.tree_parent_id),
+    summary_kind = summary_kind,
+    text = first_string(item.text, item.summary),
+    state = status_of(item),
+    from_id = util.value(item.fromId or item.from_id),
+    tokens_before = util.value(item.tokensBefore or item.tokens_before),
+    timestamp = util.value(item.timestamp),
+    raw = item,
+  }
+end
+
 local item_converters = {}
 
 item_converters.userMessage = function(item, turn_id)
@@ -425,6 +442,14 @@ item_converters.contextCompaction = function(item, turn_id)
     text = "Context was compacted.",
     raw = item,
   }
+end
+
+item_converters.branchSummary = function(item, turn_id)
+  return context_summary_block(item, turn_id, "BranchSummaryBlock", "branch")
+end
+
+item_converters.compactionSummary = function(item, turn_id)
+  return context_summary_block(item, turn_id, "CompactionSummaryBlock", "compaction")
 end
 
 item_converters.enteredReviewMode = function(item, turn_id)

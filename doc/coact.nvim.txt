@@ -213,7 +213,12 @@ pending block without duplication. Pi queue updates stay internal instead of
 creating transcript blocks, and Pi's settled event clears the busy indicator.
 Choosing a summary during Pi tree navigation shows a
 `Coact summarizing...` spinner until Pi finishes the branch summary and
-navigation.
+navigation. The result remains as a collapsed `Branch summary` block at Pi's
+active-branch position: after a selected non-user entry, after the parent of a
+selected user prompt restored to the composer, or at the transcript root when
+revisiting the first prompt. Pi compaction checkpoints render separately as
+`Context compacted` blocks before retained post-compaction context. Both forms
+use compact extmark metadata, `za` expansion, and `K` detail.
 
 When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi
 extension that registers `nvim_exec_lua`. The tool runs with the thread's
@@ -484,14 +489,16 @@ The block types include:
   PlanBlock
   ToolCallBlock
   PatchBlock
+  BranchSummaryBlock
+  CompactionSummaryBlock
   AgentTimelineBlock
   RawEventBlock
 <
 
 Headers keep markdown heading lines in the transcript buffer and render compact
 role labels through overlay extmarks; header metadata is right-aligned with
-extmarks. Reasoning/tool/patch/agent blocks are placeholders with virtual body
-lines. One user run keeps a single assistant response frame across provider
+extmarks. Reasoning/tool/patch/summary/agent blocks are placeholders with
+virtual body lines. One user run keeps a single assistant response frame across provider
 turn ids. Activity before each visible output compacts into a collapsed
 `Thinking finished` row, while activity after partial output remains live until
 the next output boundary. This preserves folded activity -> output -> folded
