@@ -980,7 +980,7 @@ local function open_reasoning(actions, thread_id)
         return
       end
       present_result(reasoning_result(as_table(efforts), actions, thread_id))
-    end)
+    end, current_thread_id(thread_id))
   end)
 end
 
@@ -1104,8 +1104,9 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
   local lines = {
     "# " .. title .. " Status",
     "",
-    "server: " .. (rpc.is_running() and "running" or "stopped"),
-    "initialized: " .. tostring(rpc.initialized),
+    "server: " .. (rpc.is_running(id) and "running" or "stopped"),
+    "initialized: " .. tostring(rpc.is_initialized(id)),
+    "provider clients: " .. tostring(rpc.client_count()),
     "cwd: " .. config.cwd(),
     "thread: " .. tostring(id or "none"),
   }
@@ -1113,6 +1114,7 @@ local function status_page(thread_id, codex_config, rate_limits, errors)
     table.insert(lines, "title: " .. tostring(thread.title or ""))
     table.insert(lines, "generation: " .. tostring(thread.generation or "idle"))
     table.insert(lines, "active turn: " .. tostring(thread.active_turn_id or "none"))
+    table.insert(lines, "provider client: " .. tostring(thread.provider_client_id or "none"))
   end
   table.insert(lines, "")
   local effective = state.effective_thread_settings(thread, cfg)
@@ -1155,12 +1157,19 @@ end
 
 local function show_status(actions, thread_id)
   ensure_server(actions, function()
-    rpc.request("config/read", { includeLayers = false, cwd = config.cwd() }, function(config_err, config_result)
+    local id = current_thread_id(thread_id)
+    local config_params = { includeLayers = false, cwd = config.cwd() }
+    local rate_params = nil
+    if providers.is("pi") then
+      config_params.threadId = id
+      rate_params = { threadId = id }
+    end
+    rpc.request("config/read", config_params, function(config_err, config_result)
       local errors = {}
       if config_err then
         table.insert(errors, "config/read failed: " .. tostring(config_err.message or config_err))
       end
-      rpc.request("account/rateLimits/read", nil, function(rate_err, rate_result)
+      rpc.request("account/rateLimits/read", rate_params, function(rate_err, rate_result)
         if rate_err then
           table.insert(errors, "account/rateLimits/read failed: " .. tostring(rate_err.message or rate_err))
         end

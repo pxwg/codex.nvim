@@ -420,7 +420,8 @@ do
     prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR
       and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_NONCE
       and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_NVIM
-      and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS,
+      and prepared_pi_env.COACT_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS
+      and prepared_pi_env.COACT_NVIM_PI_CLIENT_ID,
     "Pi edit bridge should pass runtime connection details through env vars"
   )
   local pi_nvim_bridge = require("coact.providers.pi_nvim_bridge")
@@ -445,6 +446,10 @@ do
   assert(
     pi_extension_source:match('name: "edit"') and pi_extension_source:match('name: "write"'),
     "Pi edit bridge extension should override edit and write tools"
+  )
+  assert(
+    pi_extension_source:find("COACT_NVIM_PI_CLIENT_ID", 1, true) and pi_extension_source:find("clientId", 1, true),
+    "Pi edit bridge should carry the owning execution-unit id into Neovim review"
   )
   assert(
     pi_extension_source:match("interactive approval before anything is written")
@@ -2094,6 +2099,378 @@ do
     not vim.tbl_contains(disabled_command, "--extension"),
     "disabled Pi process-local bridges should not inject extensions"
   )
+
+  local fake_pi_rpc_path = vim.fn.tempname() .. "-coact-fake-pi-rpc.mjs"
+  local fake_pi_session_dir = vim.fn.tempname() .. "-coact-fake-pi-sessions"
+  vim.fn.mkdir(fake_pi_session_dir, "p")
+  local fake_resume_file = vim.fs.joinpath(fake_pi_session_dir, "resume-route.jsonl")
+  vim.fn.writefile({
+    vim.json.encode({
+      type = "session",
+      version = 3,
+      id = "resume-route",
+      timestamp = "2026-08-07T00:00:00.000Z",
+      cwd = vim.fn.getcwd(),
+    }),
+  }, fake_resume_file)
+  vim.fn.writefile(
+    vim.split(
+      [[
+import { readFileSync } from "node:fs";
+let input = "";
+const client = process.env.COACT_NVIM_PI_CLIENT_ID || "unknown";
+let sessionId = client;
+let sessionFile = `/tmp/${client}.jsonl`;
+let model = { provider: "fake", id: "default" };
+const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
+const respond = (command, data = {}) => send({
+  id: command.id,
+  type: "response",
+  command: command.type,
+  success: true,
+  data,
+});
+const state = () => ({
+  sessionId,
+  sessionFile,
+  model,
+  thinkingLevel: "low",
+  isStreaming: false,
+});
+function prompt(command) {
+  respond(command);
+  if (command.message.startsWith("/coact-nvim-")) return;
+  const text = command.message;
+  const delay = client.endsWith("1") ? 25 : 5;
+  setTimeout(() => {
+    send({
+      type: "extension_ui_request",
+      id: `status-${client}`,
+      method: "setStatus",
+      statusKey: "route",
+      statusText: client,
+    });
+    send({ type: "agent_start" });
+    send({ type: "turn_start" });
+    send({ type: "message_start", message: { role: "user", content: [{ type: "text", text }] } });
+    send({ type: "message_start", message: { role: "assistant", content: [] } });
+    const reply = `reply:${client}:${text}`;
+    send({
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply },
+    });
+    const message = { role: "assistant", content: [{ type: "text", text: reply }] };
+    send({ type: "message_end", message });
+    send({ type: "turn_end", message, toolResults: [] });
+    send({ type: "agent_end", messages: [message], willRetry: false });
+    send({ type: "agent_settled" });
+  }, delay);
+}
+function handle(command) {
+  if (command.type === "get_state") return respond(command, state());
+  if (command.type === "get_session_stats") {
+    return respond(command, {
+      sessionId,
+      sessionFile,
+      tokens: { input: 0, output: 0, total: 0 },
+    });
+  }
+  if (command.type === "new_session") return respond(command, { cancelled: false });
+  if (command.type === "switch_session") {
+    const header = JSON.parse(readFileSync(command.sessionPath, "utf8").split("\n")[0]);
+    sessionId = header.id;
+    sessionFile = command.sessionPath;
+    return respond(command, { cancelled: false });
+  }
+  if (command.type === "prompt") return prompt(command);
+  if (command.type === "set_model") {
+    model = { provider: command.provider, id: command.modelId };
+    return respond(command, model);
+  }
+  if (command.type === "get_available_models") return respond(command, { models: [model] });
+  if (command.type === "get_available_thinking_levels") return respond(command, { levels: ["off", "low"] });
+  if (command.type === "get_messages") return respond(command, { messages: [] });
+  if (command.type === "compact" || command.type === "abort") {
+    return respond(command, { client, command: command.type });
+  }
+  return respond(command);
+}
+process.stdin.on("data", (chunk) => {
+  input += chunk.toString();
+  for (;;) {
+    const newline = input.indexOf("\n");
+    if (newline < 0) break;
+    const line = input.slice(0, newline);
+    input = input.slice(newline + 1);
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+]],
+      "\n",
+      { plain = true }
+    ),
+    fake_pi_rpc_path
+  )
+
+  coact.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        command = { "node", fake_pi_rpc_path },
+        session_dir = fake_pi_session_dir,
+        no_extensions = true,
+        no_skills = true,
+        no_context_files = true,
+        edit_bridge = { enabled = false },
+        nvim_tools = { enabled = false },
+      },
+    },
+  })
+  local rpc = require("coact.rpc")
+  local pi_rpc = require("coact.providers.pi_rpc")
+  pi_rpc.stop()
+  local routed_threads = {}
+  rpc.request("thread/start", { cwd = vim.fn.getcwd() }, function(err, result)
+    assert(not err, err and err.message or "first Pi execution unit should start")
+    routed_threads[1] = result.thread.id
+    state.update_thread_from_payload(result.thread)
+  end)
+  rpc.request("thread/start", { cwd = vim.fn.getcwd() }, function(err, result)
+    assert(not err, err and err.message or "second Pi execution unit should start")
+    routed_threads[2] = result.thread.id
+    state.update_thread_from_payload(result.thread)
+  end)
+  assert(
+    vim.wait(5000, function()
+      return routed_threads[1] ~= nil and routed_threads[2] ~= nil
+    end, 10),
+    "independent Pi execution units should initialize"
+  )
+  assert(routed_threads[1] ~= routed_threads[2], "Pi execution units should own distinct sessions")
+  assert(
+    pi_rpc.client_for_thread(routed_threads[1]) ~= pi_rpc.client_for_thread(routed_threads[2]),
+    "each Pi thread should own a distinct RPC client"
+  )
+  assert(
+    state.get_thread(routed_threads[1]).provider_client_id == pi_rpc.client_for_thread(routed_threads[1]).id
+      and state.get_thread(routed_threads[2]).provider_client_id == pi_rpc.client_for_thread(routed_threads[2]).id,
+    "Pi thread state should retain its execution-unit identity"
+  )
+
+  local accepted_turns = 0
+  rpc.request("turn/start", {
+    threadId = routed_threads[1],
+    input = { { type = "text", text = "alpha" } },
+  }, function(err)
+    assert(not err, err and err.message or "first interleaved Pi turn should be accepted")
+    accepted_turns = accepted_turns + 1
+  end)
+  rpc.request("turn/start", {
+    threadId = routed_threads[2],
+    input = { { type = "text", text = "beta" } },
+  }, function(err)
+    assert(not err, err and err.message or "second interleaved Pi turn should be accepted")
+    accepted_turns = accepted_turns + 1
+  end)
+  assert(
+    vim.wait(5000, function()
+      local first = state.get_thread(routed_threads[1])
+      local second = state.get_thread(routed_threads[2])
+      return accepted_turns == 2
+        and first
+        and second
+        and not first.pi_agent_active
+        and not second.pi_agent_active
+        and #first.item_order >= 2
+        and #second.item_order >= 2
+    end, 10),
+    "interleaved Pi sessions should settle independently"
+  )
+  local function routed_agent_text(thread_id)
+    local thread = state.get_thread(thread_id)
+    local texts = {}
+    for _, item_id in ipairs(thread.item_order or {}) do
+      local item = thread.items[item_id]
+      if item and item.type == "agentMessage" then
+        table.insert(texts, tostring(item.text or ""))
+      end
+    end
+    return table.concat(texts, "\n")
+  end
+  local first_text = routed_agent_text(routed_threads[1])
+  local second_text = routed_agent_text(routed_threads[2])
+  assert(
+    state.get_thread(routed_threads[1]).token_usage.sessionId == pi_rpc.client_for_thread(routed_threads[1]).id
+      and state.get_thread(routed_threads[2]).token_usage.sessionId == pi_rpc.client_for_thread(routed_threads[2]).id,
+    "Pi session statistics should update only their owning threads"
+  )
+  assert(
+    first_text:find("alpha", 1, true) and not first_text:find("beta", 1, true),
+    "first Pi session should receive only its own interleaved events"
+  )
+  assert(
+    second_text:find("beta", 1, true) and not second_text:find("alpha", 1, true),
+    "second Pi session should receive only its own interleaved events"
+  )
+  local first_ui = state.get_thread(routed_threads[1]).provider_ui
+  local second_ui = state.get_thread(routed_threads[2]).provider_ui
+  assert(
+    first_ui
+      and second_ui
+      and first_ui.statuses.route == pi_rpc.client_for_thread(routed_threads[1]).id
+      and second_ui.statuses.route == pi_rpc.client_for_thread(routed_threads[2]).id,
+    "Pi extension UI state should stay isolated by execution unit"
+  )
+
+  local setting_updates = 0
+  rpc.request("thread/settings/update", { threadId = routed_threads[1], model = "fake/model-alpha" }, function(err)
+    assert(not err, err and err.message or "first Pi settings update should route")
+    setting_updates = setting_updates + 1
+  end)
+  rpc.request("thread/settings/update", { threadId = routed_threads[2], model = "fake/model-beta" }, function(err)
+    assert(not err, err and err.message or "second Pi settings update should route")
+    setting_updates = setting_updates + 1
+  end)
+  local routed_configs = {}
+  assert(
+    vim.wait(5000, function()
+      return setting_updates == 2
+    end, 10),
+    "per-thread Pi settings updates should complete"
+  )
+  rpc.request("config/read", { threadId = routed_threads[1] }, function(err, result)
+    assert(not err, err and err.message or "first Pi config should read")
+    routed_configs[1] = result.config.model
+  end)
+  rpc.request("config/read", { threadId = routed_threads[2] }, function(err, result)
+    assert(not err, err and err.message or "second Pi config should read")
+    routed_configs[2] = result.config.model
+  end)
+  assert(
+    vim.wait(5000, function()
+      return routed_configs[1] ~= nil and routed_configs[2] ~= nil
+    end, 10),
+    "per-thread Pi configs should return"
+  )
+  assert(
+    routed_configs[1] == "fake/model-alpha" and routed_configs[2] == "fake/model-beta",
+    "Pi model updates should remain isolated by execution unit"
+  )
+  assert(pi_bridge._payload_thread_id({
+    __coactClientId = pi_rpc.client_for_thread(routed_threads[2]).id,
+  }) == routed_threads[2], "Pi edit bridge payloads should route through their owning execution unit")
+  local lifecycle_routes = {}
+  rpc.request("thread/compact/start", { threadId = routed_threads[1] }, function(err, result)
+    assert(not err, err and err.message or "Pi compact should route")
+    lifecycle_routes.compact = result.client
+  end)
+  rpc.request("turn/interrupt", { threadId = routed_threads[2], turnId = "fake-turn" }, function(err, result)
+    assert(not err, err and err.message or "Pi interrupt should route")
+    lifecycle_routes.abort = result.client
+  end)
+  assert(
+    vim.wait(5000, function()
+      return lifecycle_routes.compact ~= nil and lifecycle_routes.abort ~= nil
+    end, 10),
+    "Pi lifecycle commands should complete on their owning execution units"
+  )
+  assert(
+    lifecycle_routes.compact == pi_rpc.client_for_thread(routed_threads[1]).id
+      and lifecycle_routes.abort == pi_rpc.client_for_thread(routed_threads[2]).id,
+    "Pi compact and interrupt commands should not cross session routes"
+  )
+  local tree_routes = {}
+  rpc.request("thread/tree", { threadId = routed_threads[1] }, function(err, result)
+    assert(not err, err and err.message or "first Pi tree request should route")
+    tree_routes[1] = result.thread.id
+  end)
+  rpc.request("thread/tree", { threadId = routed_threads[2] }, function(err, result)
+    assert(not err, err and err.message or "second Pi tree request should route")
+    tree_routes[2] = result.thread.id
+  end)
+  assert(
+    vim.wait(5000, function()
+      return tree_routes[1] ~= nil and tree_routes[2] ~= nil
+    end, 10),
+    "Pi tree requests should complete independently"
+  )
+  assert(
+    tree_routes[1] == routed_threads[1] and tree_routes[2] == routed_threads[2],
+    "Pi tree refreshes should remain on their requested sessions"
+  )
+
+  local stopped_client = pi_rpc.client_for_thread(routed_threads[2])
+  local stopped_text = routed_agent_text(routed_threads[2])
+  pi_rpc.stop(routed_threads[2])
+  assert(rpc.is_running(routed_threads[1]), "stopping one Pi session should not stop another")
+  assert(not rpc.is_running(routed_threads[2]), "the selected Pi session should stop independently")
+  assert(
+    pi_bridge._payload_thread_id({ __coactClientId = stopped_client.id }) == nil,
+    "stale Pi edit bridge clients should not fall back to another active thread"
+  )
+  pi_rpc._dispatch(stopped_client, {
+    type = "message_update",
+    assistantMessageEvent = { type = "text_delta", contentIndex = 0, delta = "stale" },
+  })
+  vim.wait(50)
+  assert(
+    routed_agent_text(routed_threads[2]) == stopped_text,
+    "events from a stopped Pi execution unit should not update its former thread"
+  )
+
+  local resumed_route = nil
+  rpc.request("thread/resume", {
+    threadId = "pi:resume-route",
+    cwd = vim.fn.getcwd(),
+  }, function(err, result)
+    assert(not err, err and err.message or "Pi session should lazily resume in its own execution unit")
+    resumed_route = result.thread
+    state.update_thread_from_payload(result.thread)
+  end)
+  assert(
+    vim.wait(5000, function()
+      return resumed_route ~= nil
+    end, 10),
+    "Pi session resume should initialize a dedicated execution unit"
+  )
+  assert(
+    resumed_route.id == "pi:resume-route"
+      and pi_rpc.client_for_thread("pi:resume-route")
+      and pi_rpc.client_for_thread("pi:resume-route") ~= pi_rpc.client_for_thread(routed_threads[1]),
+    "resumed Pi sessions should bind only to their own RPC clients"
+  )
+  local resumed_turn = false
+  rpc.request("turn/start", {
+    threadId = "pi:resume-route",
+    input = { { type = "text", text = "resumed" } },
+  }, function(err)
+    assert(not err, err and err.message or "resumed Pi turn should route")
+    resumed_turn = true
+  end)
+  assert(
+    vim.wait(5000, function()
+      return resumed_turn and routed_agent_text("pi:resume-route"):find("resumed", 1, true) ~= nil
+    end, 10),
+    "resumed Pi session events should stay on the resumed thread"
+  )
+  local routed_list = nil
+  rpc.request("thread/list", { cwd = vim.fn.getcwd() }, function(err, result)
+    assert(not err, err and err.message or "Pi thread list should include active execution units")
+    routed_list = result.data
+  end)
+  assert(routed_list, "Pi thread list should be available without selecting one session process")
+  local listed_ids = {}
+  for _, listed in ipairs(routed_list) do
+    listed_ids[listed.id] = true
+  end
+  assert(
+    listed_ids[routed_threads[1]] and listed_ids["pi:resume-route"],
+    "Pi thread list should merge every active execution unit with persisted sessions"
+  )
+
+  rpc.stop()
+  vim.fn.delete(fake_pi_rpc_path)
+  vim.fn.delete(fake_pi_session_dir, "rf")
   coact.setup()
 end
 

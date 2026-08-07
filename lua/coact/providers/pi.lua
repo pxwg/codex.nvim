@@ -6,6 +6,7 @@ local M = {
   title = "Pi",
   agent_label = "Pi",
   protocol = "pi-rpc",
+  transport_scope = "thread",
   slash = {
     commands = {
       behavior = true,
@@ -27,8 +28,8 @@ local M = {
     },
     reasoning_label = "thinking",
     reasoning_effort_title = "thinking level",
-    load_reasoning_efforts = function(rpc, callback)
-      rpc.request("get_available_thinking_levels", {}, function(err, result)
+    load_reasoning_efforts = function(rpc, callback, thread_id)
+      rpc.request("get_available_thinking_levels", { threadId = thread_id }, function(err, result)
         if err then
           callback(err, nil)
           return
@@ -56,25 +57,77 @@ local M = {
 local request_session_stats
 local tree_summary_status_key = "coact.nvim.tree-summary"
 
-local runtime = {
-  session_id = nil,
-  session_file = nil,
-  session_name = nil,
-  current_thread_id = nil,
-  active_turn_id = nil,
-  last_turn_id = nil,
-  turn_seq = 0,
-  provider_ui = nil,
-  branch_snapshot = nil,
-  last_tree_action = nil,
-  reserved_turn = nil,
-  turn_start_pending = false,
-  queued_turns = {},
-  user_item_seq = 0,
-  tool_output = {},
-  tool_args = {},
-  tool_calls = {},
-}
+local function new_runtime()
+  return {
+    client_id = nil,
+    bound_thread_id = nil,
+    suppress_state_updates = false,
+    session_id = nil,
+    session_file = nil,
+    session_name = nil,
+    current_thread_id = nil,
+    active_turn_id = nil,
+    last_turn_id = nil,
+    turn_seq = 0,
+    provider_ui = nil,
+    branch_snapshot = nil,
+    last_tree_action = nil,
+    reserved_turn = nil,
+    turn_start_pending = false,
+    queued_turns = {},
+    user_item_seq = 0,
+    tool_output = {},
+    tool_args = {},
+    tool_calls = {},
+  }
+end
+
+local default_runtime = new_runtime()
+local active_runtime = nil
+local runtime = setmetatable({}, {
+  __index = function(_, key)
+    return (active_runtime or default_runtime)[key]
+  end,
+  __newindex = function(_, key, value)
+    (active_runtime or default_runtime)[key] = value
+  end,
+})
+
+local unpack_values = table.unpack or unpack
+
+local function pack_values(...)
+  return { n = select("#", ...), ... }
+end
+
+function M.new_runtime()
+  return new_runtime()
+end
+
+function M.with_runtime(target, callback, ...)
+  target = target or default_runtime
+  local previous = active_runtime
+  local args = pack_values(...)
+  active_runtime = target
+  local results = pack_values(pcall(function()
+    return callback(unpack_values(args, 1, args.n))
+  end))
+  active_runtime = previous
+  if not results[1] then
+    error(results[2], 0)
+  end
+  return unpack_values(results, 2, results.n)
+end
+
+local function bind_runtime_callback(callback)
+  local captured = active_runtime or default_runtime
+  return function(...)
+    return M.with_runtime(captured, callback, ...)
+  end
+end
+
+local function schedule_with_runtime(callback)
+  vim.schedule(bind_runtime_callback(callback))
+end
 
 local thinking_levels = {
   "off",
@@ -203,13 +256,13 @@ function M.env(opts, env)
   return env
 end
 
-function M.prepare_command(command, env)
+function M.prepare_command(command, env, launch)
   local err
-  command, env, err = require("coact.providers.pi_edit_bridge").prepare_command(command, env)
+  command, env, err = require("coact.providers.pi_edit_bridge").prepare_command(command, env, launch)
   if not command then
     return nil, env, err
   end
-  command, env, err = require("coact.providers.pi_nvim_bridge").prepare_command(command, env)
+  command, env, err = require("coact.providers.pi_nvim_bridge").prepare_command(command, env, launch)
   if command then
     command = without_host_nvim_env(command)
   end
@@ -309,7 +362,7 @@ local function import_thread_provider_ui(thread)
 end
 
 local function attach_provider_ui(thread_id)
-  if not thread_id or empty_provider_ui(runtime.provider_ui) then
+  if runtime.suppress_state_updates or not thread_id or empty_provider_ui(runtime.provider_ui) then
     return
   end
   local ok, coact_state = pcall(require, "coact.state")
@@ -350,7 +403,7 @@ local function remember_session_stats(stats, thread_id)
   end
   thread_id = thread_id or runtime.current_thread_id or "pi:session"
   local ok, coact_state = pcall(require, "coact.state")
-  if ok and thread_id then
+  if ok and thread_id and not runtime.suppress_state_updates then
     local thread = coact_state.ensure_thread(thread_id)
     thread.token_usage = normalized
     if normalized.autoCompactionEnabled ~= nil then
@@ -410,6 +463,9 @@ function M._remember_state(state)
 end
 
 local function current_thread_id()
+  if runtime.bound_thread_id then
+    return runtime.bound_thread_id
+  end
   local ok, state = pcall(require, "coact.state")
   if ok and state.active_thread_id then
     return runtime.current_thread_id or state.active_thread_id
@@ -1273,6 +1329,16 @@ end
 
 function M.custom_request(rpc, method, params, callback)
   params = params or {}
+  local requested_thread_id = util.value(params.threadId or params.thread_id or params.conversationId)
+  if runtime.bound_thread_id and requested_thread_id and requested_thread_id ~= runtime.bound_thread_id then
+    callback({
+      message = ("Pi execution unit %s cannot handle request for %s"):format(
+        tostring(runtime.bound_thread_id),
+        tostring(requested_thread_id)
+      ),
+    }, nil)
+    return true
+  end
   if method == "thread/start" then
     rpc._request_message("new_session", {}, function(err, result)
       if err then
@@ -1299,7 +1365,12 @@ function M.custom_request(rpc, method, params, callback)
   end
 
   if method == "thread/read" or method == "thread/resume" then
-    local session_file = resolve_session_file(params.cwd or config.cwd(), params.threadId)
+    if params._coactClientBound == true then
+      read_current_thread(rpc, params, callback)
+      return true
+    end
+    local session_file = util.value(params.sessionFile or params.session_file)
+      or resolve_session_file(params.cwd or config.cwd(), params.threadId)
     if session_file then
       rpc._request_message("switch_session", { sessionPath = session_file }, function(err, result)
         if err then
@@ -1313,7 +1384,7 @@ function M.custom_request(rpc, method, params, callback)
         read_current_thread(rpc, params, callback)
       end)
     else
-      read_current_thread(rpc, params, callback)
+      callback({ message = "Pi session file was not found for thread " .. tostring(params.threadId) }, nil)
     end
     return true
   end
@@ -1559,28 +1630,35 @@ local function refresh_current_thread(rpc, params, callback)
 end
 
 function M.on_compaction_completed(params)
-  if not (params and type(params.result) == "table") then
+  if not (params and type(params.result) == "table" and params.threadId) then
     return
   end
-  local ok, rpc = pcall(require, "coact.rpc")
-  if not (ok and rpc.is_running and rpc.is_running()) then
+  local ok, pi_rpc = pcall(require, "coact.providers.pi_rpc")
+  if not ok then
     return
   end
-  refresh_current_thread(rpc, { threadId = params.threadId or current_thread_id() }, function(err)
-    if err then
-      util.notify("Pi compaction history refresh failed: " .. tostring(err.message or err), vim.log.levels.WARN)
+  pi_rpc.with_client(params.threadId, function(client_err, client)
+    if client_err or not client then
+      return
     end
+    M.with_runtime(client.runtime, function()
+      refresh_current_thread(client, { threadId = params.threadId }, function(err)
+        if err then
+          util.notify("Pi compaction history refresh failed: " .. tostring(err.message or err), vim.log.levels.WARN)
+        end
+      end)
+    end)
   end)
 end
 
 function M.on_generation_completed(payload)
   local thread = payload and payload.thread or nil
-  local thread_id = thread and thread.id or runtime.current_thread_id or current_thread_id()
+  local thread_id = thread and thread.id or nil
   if not thread_id then
     return
   end
   local ok, rpc = pcall(require, "coact.rpc")
-  if not (ok and rpc.is_running and rpc.is_running()) then
+  if not (ok and rpc.is_running and rpc.is_running(thread_id)) then
     return
   end
   rpc.request("thread/treeSnapshot", { threadId = thread_id }, function() end)
@@ -2171,6 +2249,9 @@ local function handle_branch_snapshot_request(message, rpc)
 end
 
 local function provider_ui_thread()
+  if runtime.suppress_state_updates then
+    return nil
+  end
   local ok, coact_state = pcall(require, "coact.state")
   if not ok then
     return nil
@@ -2307,9 +2388,9 @@ function M.handle_raw_message(message, rpc)
   if message.method == "select" then
     local bridge_ok, nvim_bridge = pcall(require, "coact.providers.pi_nvim_bridge")
     if bridge_ok and nvim_bridge.is_request(message) then
-      vim.schedule(function()
+      schedule_with_runtime(function()
         local result = nvim_bridge.handle_request(message, {
-          thread_id = runtime.current_thread_id or current_thread_id(),
+          thread_id = current_thread_id(),
         })
         extension_response(rpc, message, { value = result })
       end)
@@ -2321,23 +2402,27 @@ function M.handle_raw_message(message, rpc)
     end
     local ok, pi_tree = pcall(require, "coact.providers.pi_tree")
     if ok and pi_tree.is_request(message) then
-      vim.schedule(function()
-        pi_tree.select(message, function(choice)
-          local tree_action = normalize_tree_action(choice)
-          if choice == nil then
-            runtime.last_tree_action = { __coactNvimPiTreeAction = true, action = "cancel" }
-            extension_response(rpc, message, { cancelled = true })
-          else
-            if tree_action then
-              runtime.last_tree_action = tree_action
+      schedule_with_runtime(function()
+        pi_tree.select(
+          message,
+          bind_runtime_callback(function(choice)
+            local tree_action = normalize_tree_action(choice)
+            if choice == nil then
+              runtime.last_tree_action = { __coactNvimPiTreeAction = true, action = "cancel" }
+              extension_response(rpc, message, { cancelled = true })
+            else
+              if tree_action then
+                runtime.last_tree_action = tree_action
+              end
+              extension_response(rpc, message, { value = choice })
             end
-            extension_response(rpc, message, { value = choice })
-          end
-        end, { thread_id = runtime.current_thread_id or current_thread_id() })
+          end),
+          { thread_id = current_thread_id() }
+        )
       end)
       return true
     end
-    vim.schedule(function()
+    schedule_with_runtime(function()
       local options = type(message.options) == "table" and message.options or {}
       vim.ui.select(options, { prompt = extension_prompt(message, "Pi select") }, function(choice)
         if choice == nil then
@@ -2350,7 +2435,7 @@ function M.handle_raw_message(message, rpc)
     return true
   end
   if message.method == "confirm" then
-    vim.schedule(function()
+    schedule_with_runtime(function()
       local prompt = extension_prompt(message, "Pi confirm")
       vim.ui.select({ "Yes", "No" }, { prompt = prompt }, function(choice)
         if choice == nil then
@@ -2363,7 +2448,7 @@ function M.handle_raw_message(message, rpc)
     return true
   end
   if message.method == "input" or message.method == "editor" then
-    vim.schedule(function()
+    schedule_with_runtime(function()
       vim.ui.input({
         prompt = extension_prompt(message, message.method == "editor" and "Pi editor" or "Pi input") .. ": ",
         default = util.value(message.prefill) or "",
@@ -2437,7 +2522,7 @@ function M.health(opts, health)
   health.ok(("Pi command configured: %s"):format(health.command_label(command)))
 end
 
-M._runtime = runtime
+M._runtime = default_runtime
 M._prompt_from_input = prompt_from_input
 M._thread_from_state = thread_from_state
 M._session_dir_for_cwd = configured_session_dir

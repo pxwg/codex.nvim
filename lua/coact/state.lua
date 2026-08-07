@@ -161,6 +161,7 @@ function M.ensure_thread(thread_id, attrs)
       pending_requests = {},
       pi_agent_active = false,
       pi_queue = { steering = {}, follow_up = {} },
+      provider_client_id = nil,
       status_message = nil,
       last_error = nil,
     }
@@ -327,6 +328,7 @@ function M.update_thread_from_payload(payload)
     title = util.value(payload.name) or util.value(payload.preview),
     token_usage = payload.token_usage or payload.tokenUsage,
     auto_compaction_enabled = util.value(payload.autoCompactionEnabled or payload.auto_compaction_enabled),
+    provider_client_id = util.value(payload.providerClientId or payload.provider_client_id),
   })
   if payload.replaceTurns == true or payload.replace_turns == true then
     thread.turns = {}

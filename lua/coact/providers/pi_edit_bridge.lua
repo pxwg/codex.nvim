@@ -338,13 +338,17 @@ function assertBridgeEnv() {
   const addr = process.env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR;
   const nonce = process.env.COACT_NVIM_PI_EDIT_BRIDGE_NONCE;
   const nvim = process.env.COACT_NVIM_PI_EDIT_BRIDGE_NVIM || "nvim";
+  const clientId = process.env.COACT_NVIM_PI_CLIENT_ID;
   if (!addr) {
     throw new Error("coact.nvim Pi edit bridge is not connected to a Neovim RPC server.");
   }
   if (!nonce) {
     throw new Error("coact.nvim Pi edit bridge is missing its Neovim nonce.");
   }
-  return { addr, nonce, nvim };
+  if (!clientId) {
+    throw new Error("coact.nvim Pi edit bridge is missing its execution-unit id.");
+  }
+  return { addr, nonce, nvim, clientId };
 }
 
 function luaSingleQuote(value) {
@@ -365,11 +369,11 @@ async function resultFileReady(path) {
 }
 
 async function reviewWithNeovim(payload, signal) {
-  const { addr, nonce, nvim } = assertBridgeEnv();
+  const { addr, nonce, nvim, clientId } = assertBridgeEnv();
   const dir = await mkdtemp(join(tmpdir(), "coact-nvim-pi-edit-"));
   const payloadPath = join(dir, "payload.json");
   const resultPath = join(dir, "result.json");
-  const argsJson = JSON.stringify({ payload: payloadPath, nonce, result: resultPath });
+  const argsJson = JSON.stringify({ payload: payloadPath, nonce, result: resultPath, clientId });
   const expr =
     "luaeval('require(\"coact.providers.pi_edit_bridge\").review_file_async(_A)', " + luaSingleQuote(argsJson) + ")";
 
@@ -817,7 +821,7 @@ function M.setup()
   direct_write_enabled = true
 end
 
-function M.prepare_command(command, env)
+function M.prepare_command(command, env, launch)
   ensure_direct_write_allowlist()
   if not enabled() then
     return command, env
@@ -833,6 +837,7 @@ function M.prepare_command(command, env)
   env = env or {}
   env.COACT_NVIM_PI_EDIT_BRIDGE_ADDR = address
   env.COACT_NVIM_PI_EDIT_BRIDGE_NONCE = ensure_nonce()
+  env.COACT_NVIM_PI_CLIENT_ID = launch and launch.client_id or env.COACT_NVIM_PI_CLIENT_ID or "pi-legacy"
   env.COACT_NVIM_PI_EDIT_BRIDGE_NVIM = ensure_nvim_bin()
   env.COACT_NVIM_PI_EDIT_BRIDGE_TIMEOUT_MS = tostring(timeout_ms())
   return append_command_args(command, { "--extension", path }), env
@@ -981,18 +986,38 @@ local function build_patch(cwd, payload)
 end
 
 local function payload_thread_id(payload)
+  local client_id = util.value(payload.__coactClientId or payload.clientId or payload.client_id)
+  if client_id then
+    local ok, pi_rpc = pcall(require, "coact.providers.pi_rpc")
+    local thread_id = ok and pi_rpc.thread_id_for_client(client_id) or nil
+    if thread_id then
+      return thread_id
+    end
+    return nil
+  end
+  local explicit = util.value(payload.threadId) or util.value(payload.thread_id)
+  if explicit then
+    return explicit
+  end
   local ok, pi = pcall(require, "coact.providers.pi")
   if ok and pi._runtime and pi._runtime.current_thread_id then
     return pi._runtime.current_thread_id
   end
-  local state = require("coact.state")
-  return state.active_thread_id or util.value(payload.threadId) or util.value(payload.thread_id)
+  return require("coact.state").active_thread_id
 end
 
 function M.review_payload_async(payload, done)
   done = type(done) == "function" and done or function() end
   payload = type(payload) == "table" and payload or {}
   local cwd = util.value(payload.cwd) or config.cwd()
+  local thread_id = payload_thread_id(payload)
+  if util.value(payload.__coactClientId or payload.clientId or payload.client_id) and not thread_id then
+    done({
+      success = false,
+      summary = "Rejected Pi edit bridge request from a stale execution unit.",
+    })
+    return
+  end
   local patch, change, err = build_patch(cwd, payload)
   if not patch then
     done({
@@ -1016,7 +1041,7 @@ function M.review_payload_async(payload, done)
     local interactive = not direct_write_allowed(cwd, change.path)
     local session, open_err = require("coact.patch_session").open({
       request_id = util.value(payload.toolCallId) or util.value(payload.tool_call_id) or tostring(vim.uv.hrtime()),
-      thread_id = payload_thread_id(payload),
+      thread_id = thread_id,
       cwd = cwd,
       changes = { change },
       diagnostics_settle_ms = (config.get().edit or {}).diagnostics_settle_ms,
@@ -1070,6 +1095,7 @@ function M.review_file_async(args)
     })
     return "queued"
   end
+  payload.__coactClientId = util.value(args.clientId or args.client_id)
   local ok, async_err = pcall(M.review_payload_async, payload, finish)
   if not ok then
     finish({
@@ -1099,6 +1125,8 @@ end
 function M._extension_source()
   return extension_source()
 end
+
+M._payload_thread_id = payload_thread_id
 
 function M._build_patch(cwd, payload)
   return build_patch(cwd, payload)

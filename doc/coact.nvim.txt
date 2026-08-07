@@ -201,14 +201,24 @@ To use Pi as the active provider:
 The Pi provider adapts Pi RPC sessions into coact.nvim threads, maps prompts to
 Pi `prompt` commands, maps /model and reasoning changes to Pi model/thinking
 commands, and normalizes Pi streaming, thinking, and tool events into the same
-renderer blocks used by the rest of coact.nvim. The thread picker reads Pi's
+renderer blocks used by the rest of coact.nvim. Every active Pi thread owns an
+independent `pi --mode rpc` process, pending-request table, event stream,
+turn/queue/tool runtime, settings, statistics, and extension UI state. The
+thread id is bound to that execution unit after Pi reports its session id; UI
+focus never selects a transport destination. Different Pi sessions can
+therefore generate concurrently and accept interleaved submissions without
+switching, aborting, or relabeling another session. Closing a thread window
+only hides its view. `:Coact restart` and Neovim shutdown stop the execution
+units. Concurrent workspace edits retain the existing edit/review behavior.
+
+The thread picker reads Pi's
 `parentSession` metadata, groups forked session files beneath their parent with
 tree connectors, and keeps every fork independently selectable. `/reasoning`
 queries Pi for the current model's available thinking levels when the picker
 opens, so model-declared holes and extended levels such as `max` are honored.
-Submitting
-another prompt while Pi is generating queues it as a Pi `followUp` instead of
-failing with "Agent is already processing". Queued prompts remain visible once
+Submitting another prompt while one Pi thread is generating queues it as a Pi
+`followUp` for that same thread. Submitting in another Pi thread starts or
+queues work only in that thread. Queued prompts remain visible once
 under a distinct `Queued request` header with queue state and FIFO position
 until Pi delivers each user message. The normal user message then replaces the
 pending block without duplication. Pi queue updates stay internal instead of
@@ -295,8 +305,9 @@ COMMANDS                                               *coact.nvim-commands*
 <
 
 `pick` uses snacks.picker when available and falls back to |vim.ui.select()|.
-`:Coact status` reports provider process state, active/current thread ids, pending
-request counts, and the current thread generation/status.
+`:Coact status` reports the current thread's provider execution-unit state, the
+total provider client count, active/current thread ids, pending request counts,
+and the current thread generation/status.
 
 `:Coact attach` reruns the configured buffer attach hook for the current
 thread buffer. `:Coact attach all` reruns it for every loaded provider thread

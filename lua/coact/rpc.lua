@@ -46,6 +46,10 @@ local function schedule(fn)
   vim.schedule(fn)
 end
 
+local function pi_rpc()
+  return require("coact.providers.pi_rpc")
+end
+
 local function expected_exit(code, stopping)
   return stopping or code == 0 or code == 15 or code == 143
 end
@@ -154,8 +158,36 @@ local function feed_stderr(data)
   end
 end
 
-function M.is_running()
+function M.is_running(thread_id)
+  if providers.is("pi") then
+    return pi_rpc().is_running(thread_id)
+  end
   return M.job_id ~= nil and M.job_id > 0
+end
+
+function M.is_initialized(thread_id)
+  if providers.is("pi") then
+    return pi_rpc().is_initialized(thread_id)
+  end
+  return M.initialized
+end
+
+function M.pending_count(thread_id)
+  if providers.is("pi") then
+    return pi_rpc().pending_count(thread_id)
+  end
+  local total = 0
+  for _ in pairs(M.pending) do
+    total = total + 1
+  end
+  return total
+end
+
+function M.client_count()
+  if providers.is("pi") then
+    return pi_rpc().client_count()
+  end
+  return M.is_running() and 1 or 0
 end
 
 local function register_native_hook_trust(callback)
@@ -218,6 +250,9 @@ local function register_native_hook_trust(callback)
 end
 
 function M.start(callback)
+  if providers.is("pi") then
+    return pi_rpc().start(callback)
+  end
   if M.is_running() then
     if callback then
       callback(nil, true)
@@ -322,7 +357,11 @@ function M.start(callback)
 end
 
 function M.stop()
-  if M.is_running() then
+  local loaded_pi_rpc = package.loaded["coact.providers.pi_rpc"]
+  if loaded_pi_rpc then
+    loaded_pi_rpc.stop()
+  end
+  if M.job_id ~= nil and M.job_id > 0 then
     M.stopping = true
     vim.fn.jobstop(M.job_id)
   end
@@ -332,6 +371,9 @@ function M.stop()
 end
 
 function M.send(message)
+  if providers.is("pi") then
+    return pi_rpc().send(message)
+  end
   if not M.is_running() then
     error(providers.title() .. " provider is not running")
   end
@@ -339,6 +381,9 @@ function M.send(message)
 end
 
 function M._request_message(method, params, callback)
+  if providers.is("pi") then
+    return pi_rpc().request_raw(method, params, callback)
+  end
   callback = callback or function() end
   local id = M.next_id
   M.next_id = M.next_id + 1
@@ -357,6 +402,9 @@ function M._request_message(method, params, callback)
 end
 
 function M.request(method, params, callback)
+  if providers.is("pi") then
+    return pi_rpc().request(method, params, callback)
+  end
   local provider = providers.current()
   if type(provider.custom_request) == "function" then
     local handled, id = provider.custom_request(M, method, params, callback or function() end)
@@ -368,6 +416,9 @@ function M.request(method, params, callback)
 end
 
 function M.notify(method, params)
+  if providers.is("pi") then
+    return pi_rpc().notify(method, params)
+  end
   if M.stopping or not M.is_running() then
     return false
   end

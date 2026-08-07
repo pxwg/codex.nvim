@@ -245,7 +245,7 @@ function M.open(thread_id)
     return
   end
   local existing = state.get_thread(thread_id)
-  if existing then
+  if existing and (not providers.is("pi") or rpc.is_running(thread_id)) then
     buffers.open(thread_id)
     return
   end
@@ -266,7 +266,12 @@ function M.resume(thread_id)
     return util.notify("usage: :Coact resume <thread-id>", vim.log.levels.WARN)
   end
   local existing = state.get_thread(thread_id)
-  if existing and existing.bufnr and vim.api.nvim_buf_is_valid(existing.bufnr) then
+  if
+    existing
+    and existing.bufnr
+    and vim.api.nvim_buf_is_valid(existing.bufnr)
+    and (not providers.is("pi") or rpc.is_running(thread_id))
+  then
     buffers.open(thread_id)
     return
   end
@@ -479,9 +484,10 @@ function M.status()
   return {
     provider = providers.current_id(),
     provider_title = providers.title(),
-    server_running = rpc.is_running(),
-    server_initialized = rpc.initialized,
-    pending_rpc_requests = count(rpc.pending),
+    server_running = rpc.is_running(thread and thread.id or nil),
+    server_initialized = rpc.is_initialized(thread and thread.id or nil),
+    provider_clients = rpc.client_count(),
+    pending_rpc_requests = rpc.pending_count(thread and thread.id or nil),
     pending_server_requests = count(state.pending_server_requests),
     current_thread_id = current_thread and current_thread.id or nil,
     active_thread_id = state.active_thread_id,
@@ -493,6 +499,7 @@ function M.status()
     lifecycle = thread and thread.lifecycle or nil,
     sync = thread and thread.sync or nil,
     active_turn_id = thread and thread.active_turn_id or nil,
+    provider_client_id = thread and thread.provider_client_id or nil,
     status_message = thread and thread.status_message or nil,
     last_error = thread and thread.last_error or nil,
   }
@@ -504,12 +511,16 @@ function M.show_status()
     "provider: " .. tostring(status.provider),
     "server: " .. (status.server_running and "running" or "stopped"),
     "initialized: " .. tostring(status.server_initialized),
+    "provider clients: " .. tostring(status.provider_clients or 0),
     "pending rpc: " .. tostring(status.pending_rpc_requests),
     "pending approvals: " .. tostring(status.pending_server_requests),
     "active thread: " .. tostring(status.active_thread_id or "none"),
   }
   if status.current_thread_id then
     table.insert(lines, "current thread: " .. tostring(status.current_thread_id))
+  end
+  if status.provider_client_id then
+    table.insert(lines, "provider client: " .. tostring(status.provider_client_id))
   end
   if status.title then
     table.insert(lines, "title: " .. tostring(status.title))

@@ -145,7 +145,7 @@ local function ensure_extension_path()
   return extension_path
 end
 
-function M.prepare_command(command, env)
+function M.prepare_command(command, env, launch)
   if not enabled() then
     return command, env
   end
@@ -154,6 +154,7 @@ function M.prepare_command(command, env)
     return nil, nil, path_err
   end
   env = env or {}
+  env.COACT_NVIM_PI_CLIENT_ID = launch and launch.client_id or env.COACT_NVIM_PI_CLIENT_ID or "pi-legacy"
   env.COACT_NVIM_PI_NVIM_BRIDGE_NONCE = ensure_nonce()
   return append_command_args(command, { "--extension", path }), env
 end
