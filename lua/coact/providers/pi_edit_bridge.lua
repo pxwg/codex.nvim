@@ -1,4 +1,5 @@
 local config = require("coact.config")
+local directory_allowlist = require("coact.directory_allowlist")
 local util = require("coact.util")
 
 local M = {}
@@ -7,12 +8,73 @@ local nonce = nil
 local server_address = nil
 local nvim_bin = nil
 local extension_path = nil
+local configured_options = nil
+local direct_write_allowlist = nil
+local direct_write_enabled = false
 
 local function bridge_opts()
   local opts = config.get()
   local providers = opts.providers or {}
   local pi = providers.pi or {}
   return pi.edit_bridge or {}
+end
+
+local function direct_write_context()
+  local ok_uname, uname = pcall(vim.uv.os_uname)
+  uname = ok_uname and type(uname) == "table" and uname or {}
+  local ok_tmpdir, os_tmpdir = pcall(vim.uv.os_tmpdir)
+  os_tmpdir = ok_tmpdir and type(os_tmpdir) == "string" and os_tmpdir or nil
+  local ok_tempname, tempname = pcall(vim.fn.tempname)
+  local nvim_tmpdir = ok_tempname and type(tempname) == "string" and vim.fs.dirname(tempname) or nil
+  return {
+    cwd = config.cwd(),
+    sysname = uname.sysname,
+    uname = uname,
+    os_tmpdir = os_tmpdir,
+    nvim_tmpdir = nvim_tmpdir,
+    env = {
+      TMPDIR = vim.env.TMPDIR,
+      TMP = vim.env.TMP,
+      TEMP = vim.env.TEMP,
+      LOCALAPPDATA = vim.env.LOCALAPPDATA,
+    },
+  }
+end
+
+-- This is deliberately the same callback contract exposed by
+-- providers.pi.edit_bridge.direct_write, so this implementation is also a
+-- complete configuration example.
+local function configure_system_temp_direct_write(allowlist, context)
+  allowlist:add(context.os_tmpdir)
+  allowlist:add(context.nvim_tmpdir)
+  allowlist:add(context.env.TMPDIR)
+  allowlist:add(context.env.TMP)
+  allowlist:add(context.env.TEMP)
+
+  if context.sysname == "Windows_NT" then
+    if context.env.LOCALAPPDATA and context.env.LOCALAPPDATA ~= "" then
+      allowlist:add(vim.fs.joinpath(context.env.LOCALAPPDATA, "Temp"))
+    end
+  else
+    allowlist:add("/tmp")
+    allowlist:add("/var/tmp")
+  end
+end
+
+local function run_direct_write_configurator(label, configure, allowlist, context)
+  local ok, result = pcall(configure, allowlist, context)
+  if not ok then
+    error(("providers.pi.edit_bridge.direct_write %s failed: %s"):format(label, tostring(result)), 0)
+  end
+  if result ~= nil and result ~= allowlist then
+    allowlist:add(result)
+  end
+end
+
+local function ensure_direct_write_allowlist()
+  if configured_options ~= config.get() then
+    M.setup()
+  end
 end
 
 local function enabled()
@@ -725,7 +787,38 @@ local function ensure_extension_path()
   return extension_path
 end
 
+function M.setup()
+  configured_options = config.get()
+  direct_write_enabled = false
+  direct_write_allowlist = nil
+
+  local setting = bridge_opts().direct_write
+  if setting ~= nil and type(setting) ~= "boolean" and type(setting) ~= "function" then
+    error("providers.pi.edit_bridge.direct_write must be true, false, or a function", 0)
+  end
+  if setting == false then
+    return
+  end
+
+  local context = direct_write_context()
+  local builder = directory_allowlist.new({ base = context.cwd })
+  run_direct_write_configurator(
+    "default temp-directory initializer",
+    configure_system_temp_direct_write,
+    builder,
+    context
+  )
+  if type(setting) == "function" then
+    run_direct_write_configurator("callback", setting, builder, context)
+  end
+
+  direct_write_allowlist = directory_allowlist.new({ base = context.cwd })
+  direct_write_allowlist:add(builder:paths())
+  direct_write_enabled = true
+end
+
 function M.prepare_command(command, env)
+  ensure_direct_write_allowlist()
   if not enabled() then
     return command, env
   end
@@ -795,10 +888,19 @@ local function absolute_path(cwd, path)
     return nil
   end
   path = vim.fn.expand(path)
-  if path:match("^/") or path:match("^%a:[/\\]") then
+  if path:match("^/") or path:match("^%a:[/\\]") or path:match("^[/\\][/\\]") then
     return vim.fs.normalize(path)
   end
   return vim.fs.normalize(vim.fs.joinpath(cwd or config.cwd(), path))
+end
+
+local function direct_write_allowed(cwd, path)
+  ensure_direct_write_allowlist()
+  if not direct_write_enabled or not direct_write_allowlist then
+    return false
+  end
+  local absolute = absolute_path(cwd, path)
+  return absolute ~= nil and direct_write_allowlist:contains(absolute)
 end
 
 local function relative_path(cwd, path)
@@ -911,12 +1013,14 @@ function M.review_payload_async(payload, done)
   end
 
   vim.schedule(function()
+    local interactive = not direct_write_allowed(cwd, change.path)
     local session, open_err = require("coact.patch_session").open({
       request_id = util.value(payload.toolCallId) or util.value(payload.tool_call_id) or tostring(vim.uv.hrtime()),
       thread_id = payload_thread_id(payload),
       cwd = cwd,
       changes = { change },
       diagnostics_settle_ms = (config.get().edit or {}).diagnostics_settle_ms,
+      interactive = interactive,
       on_complete = function(summary, success, session_result)
         done({
           success = success,

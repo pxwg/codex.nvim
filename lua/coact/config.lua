@@ -27,6 +27,7 @@ local defaults = {
       edit_bridge = {
         enabled = true,
         timeout_sec = 600,
+        direct_write = true,
       },
       nvim_tools = {
         enabled = true,

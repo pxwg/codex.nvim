@@ -1730,7 +1730,7 @@ local function open_buffer_for_file(session, file, focus)
 end
 
 local function prepare_files(session)
-  local focused = false
+  local focused = not session.interactive
   for _, change in ipairs(session.changes or {}) do
     local path = absolute_path(session.cwd, change.path)
     if not path then
@@ -1840,6 +1840,7 @@ function M.open(opts)
     diagnostics_settle_ms = opts.diagnostics_settle_ms,
     apply_on_complete = opts.apply_on_complete,
     restore_on_complete = opts.restore_on_complete,
+    interactive = opts.interactive ~= false,
     files = {},
     file_order = {},
     buffers = {},
@@ -1865,17 +1866,19 @@ function M.open(opts)
     return nil, err
   end
 
-  for bufnr in pairs(session.buffers) do
-    setup_keymaps(session, bufnr)
+  if session.interactive then
+    for bufnr in pairs(session.buffers) do
+      setup_keymaps(session, bufnr)
+    end
+    setup_autocmds(session)
   end
-  setup_autocmds(session)
 
   if #session.blocks == 0 then
     complete(session, false)
     return session
   end
 
-  if opts.interactive == false then
+  if not session.interactive then
     accept_all(session)
     return session
   end

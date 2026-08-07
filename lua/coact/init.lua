@@ -41,6 +41,7 @@ local function setup_once()
     core.setup()
     context.setup()
     require("coact.native_apply_patch_hook").setup()
+    require("coact.providers.pi_edit_bridge").setup()
     require("coact.behavior").setup()
     did_setup = true
   end
@@ -212,6 +213,7 @@ function M.setup(opts)
   core.setup()
   context.setup()
   require("coact.native_apply_patch_hook").setup()
+  require("coact.providers.pi_edit_bridge").setup()
   require("coact.behavior").setup()
   setup_lifecycle()
   did_setup = true

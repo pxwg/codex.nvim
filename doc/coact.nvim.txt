@@ -88,6 +88,7 @@ Default options:
         edit_bridge = {
           enabled = true,
           timeout_sec = 600,
+          direct_write = true,
         },
         nvim_tools = {
           enabled = true,
@@ -187,6 +188,7 @@ To use Pi as the active provider:
         edit_bridge = {
           enabled = true,
           timeout_sec = 600,
+          direct_write = true,
         },
         nvim_tools = {
           enabled = true,
@@ -240,6 +242,36 @@ extension overrides Pi's built-in `edit` and `write` tools, turns them into
 Neovim-reviewed file-change proposals, and then lets the existing in-buffer
 patch review write accepted hunks. Neither injected extension installs or
 modifies user Pi extensions or settings.
+
+`edit_bridge.direct_write = true` builds a directory allowlist once during
+setup from the current operating system's temporary directories. Canonical
+targets beneath those directories skip the interactive window and use the same
+Neovim patch-session write path as a full approval with no comment. The
+allowlist and bypass decision are not added to Pi's prompt, tool interface,
+environment, or result; Pi receives the ordinary fully accepted review summary.
+
+Set `direct_write = false` to disable all default temp-directory bypasses. A
+function extends or replaces the defaults at setup time. It runs after the OS
+defaults and receives the same abstraction as the built-in initializer:
+>
+  edit_bridge = {
+    direct_write = function(allowlist, context)
+      allowlist:add("/absolute/path/to/another/scratch-directory")
+      allowlist:remove(context.os_tmpdir)
+
+      -- To replace every default instead:
+      -- allowlist:clear()
+      -- allowlist:add("/absolute/path/to/the/only/scratch-directory")
+    end,
+  }
+<
+
+The context exposes `cwd`, `sysname`, `uname`, `os_tmpdir`, `nvim_tmpdir`, and
+temporary-directory environment values under `env`. `add()` and `remove()`
+accept one path or a list; `paths()` returns the current snapshot and
+`contains()` tests a path. Relative configured paths resolve from the setup
+workspace. Matching observes directory components and existing symlinks, so
+prefix siblings and symlink escapes are not bypassed.
 
 ==============================================================================
 COMMANDS                                               *coact.nvim-commands*
@@ -448,7 +480,10 @@ of Pi's global extension configuration. coact.nvim appends `--extension
 timeout through environment variables. The override computes the proposed
 `edit`/`write` file content, opens the same in-buffer `patch_session` review
 used by `nvim.apply_patch`, and reports the accepted or rejected result back to
-Pi as the tool result.
+Pi as the tool result. Targets accepted by
+`providers.pi.edit_bridge.direct_write` run that patch session non-interactively
+and return the same full-approval result without disclosing configured paths to
+Pi.
 
 `edit.mode = "yolo"` tells the active provider to use its native file-edit path
 directly without the Neovim review bridge. Calls to `nvim.apply_patch` are

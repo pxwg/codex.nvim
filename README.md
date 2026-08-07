@@ -94,6 +94,7 @@ require("coact").setup({
       edit_bridge = {
         enabled = true,
         timeout_sec = 600,
+        direct_write = true,
       },
       nvim_tools = {
         enabled = true,
@@ -197,6 +198,7 @@ require("coact").setup({
       edit_bridge = {
         enabled = true,
         timeout_sec = 600,
+        direct_write = true,
       },
       nvim_tools = {
         enabled = true,
@@ -213,6 +215,25 @@ When `nvim_tools.enabled` is true, coact.nvim injects a process-local Pi extensi
 `nvim_exec_lua` is a full-trust escape hatch into the live editor: it can read unsaved buffers, mutate editor state, write files, run shell-capable Ex commands, or close Neovim. Routine workspace file changes should continue to use the reviewed `edit` and `write` tools. Set `nvim_tools.enabled = false` when that live-editor capability should not be exposed.
 
 In pair edit mode, `edit_bridge.enabled` dynamically injects a separate temporary Pi extension into only the Pi process started by coact.nvim. That extension overrides Pi's built-in `edit` and `write` tools, turns them into Neovim-reviewed file-change proposals, and then lets the existing in-buffer patch review write accepted hunks. Neither injected extension installs or modifies user Pi extensions or settings.
+
+`edit_bridge.direct_write = true` builds a directory allowlist once during setup from the current operating system's temporary directories. Canonical targets beneath those directories skip the interactive window and use the same Neovim patch-session write path as a full approval with no comment. The allowlist and bypass decision are not added to Pi's prompt, tool schemas/descriptions, environment, or tool result; Pi receives the ordinary fully accepted review summary.
+
+Set `direct_write = false` to disable all default temporary-directory bypasses. To extend or replace the defaults, use a setup-time function. It runs after the defaults and receives the same allowlist abstraction used by the built-in OS initializer:
+
+```lua
+edit_bridge = {
+  direct_write = function(allowlist, context)
+    allowlist:add("/absolute/path/to/another/scratch-directory")
+    allowlist:remove(context.os_tmpdir)
+
+    -- To replace every default instead:
+    -- allowlist:clear()
+    -- allowlist:add("/absolute/path/to/the/only/scratch-directory")
+  end,
+}
+```
+
+The callback also receives `context.cwd`, `context.sysname`, `context.uname`, `context.os_tmpdir`, `context.nvim_tmpdir`, and the relevant temporary-directory environment values in `context.env`. `allowlist:add()` and `allowlist:remove()` accept a path or list of paths; `allowlist:paths()` returns the current snapshot and `allowlist:contains()` tests a path. Relative configured paths resolve from the setup workspace. Matching is directory-component aware and resolves existing symlinks, so prefix siblings and symlink escapes are not bypassed.
 
 ## Commands
 
@@ -308,7 +329,7 @@ The review buffer indexes file changes and unified-diff hunk headers with extmar
 
 The pair-mode native review uses file-buffer changed-block controls with visible in-buffer hints: `.` approves the current changed block and prompts for an approval comment, `,` rejects it with a reason, `n` / `p` jumps between pending changed blocks, `ga` approves the rest with one approval-comment prompt, `gr` rejects the rest with a reason, `q` cancels, and `?` opens the key help. The review display wraps long before-lines into readable virtual lines and highlights changed characters inside the current replacement block when it fits the `edit.review.char_diff_*` budget. You can edit the previewed file buffer before approving; coact.nvim writes the final approved buffer state and returns the review summary to the provider as hook context, including approval comments, rejection reasons, and any diff between the provider proposal and the final Neovim-reviewed state. The previous `nvim.apply_patch` dynamic tool implementation remains in the codebase for compatibility and internal tests, but it is no longer exposed by default in pair mode.
 
-For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result.
+For the Pi provider, pair mode uses a process-local extension override instead of Pi's global extension configuration. coact.nvim appends `--extension <tempfile>` while starting Pi RPC and passes the Neovim RPC socket, nonce, and timeout through environment variables. The override computes the proposed `edit`/`write` file content, opens the same in-buffer `patch_session` review used by `nvim.apply_patch`, and reports the accepted or rejected result back to Pi as the tool result. Targets accepted by `providers.pi.edit_bridge.direct_write` run that patch session non-interactively and return the same full-approval result without disclosing the configured directories to Pi.
 
 `edit.mode = "yolo"` tells the active provider to use its native file-edit path directly without the Neovim review bridge. Calls to `nvim.apply_patch` are rejected while the tool is not exposed. The legacy option `dynamic_tools.prefer_nvim_apply_patch = false` still selects yolo mode unless `edit.mode` is set explicitly.
 

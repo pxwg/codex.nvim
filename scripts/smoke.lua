@@ -447,6 +447,11 @@ do
     "Pi edit bridge extension should override edit and write tools"
   )
   assert(
+    pi_extension_source:match("interactive approval before anything is written")
+      and not pi_extension_source:find("direct_write", 1, true),
+    "Pi direct-write policy should not change or disclose itself through the agent-facing tool interface"
+  )
+  assert(
     pi_extension_source:match("small cooperative deltas") and pi_extension_source:match("return control to the user"),
     "Pi edit bridge edit prompt should discourage autonomous bulk generation"
   )
@@ -3408,6 +3413,137 @@ assert(
 end)();
 (function()
   local pi_bridge = require("coact.providers.pi_edit_bridge")
+  coact.setup({ provider = "pi" })
+  local default_direct_file = vim.fs.joinpath(session_dir, "pi-default-direct-write.txt")
+  local default_direct_result = nil
+  local current_before_default_direct = vim.api.nvim_get_current_buf()
+  pi_bridge.review_payload_async({
+    toolName = "write",
+    toolCallId = "pi-default-direct-write-smoke",
+    cwd = session_dir,
+    path = default_direct_file,
+    oldContent = "",
+    newContent = "default temporary write\n",
+    kind = "add",
+  }, function(result)
+    default_direct_result = result
+  end)
+  vim.wait(1000, function()
+    return default_direct_result ~= nil
+  end, 20)
+  assert(
+    default_direct_result
+      and default_direct_result.success
+      and default_direct_result.acceptedBlocks == 1
+      and vim.api.nvim_get_current_buf() == current_before_default_direct,
+    "Pi edit bridge should directly apply default system-temp writes without opening an interactive window"
+  )
+
+  coact.setup({ provider = "pi", providers = { pi = { edit_bridge = { direct_write = false } } } })
+  local disabled_direct_file = vim.fs.joinpath(session_dir, "pi-disabled-direct-write.txt")
+  vim.fn.writefile({ "before" }, disabled_direct_file)
+  local disabled_direct_result = nil
+  pi_bridge.review_payload_async({
+    toolName = "edit",
+    toolCallId = "pi-disabled-direct-write-smoke",
+    cwd = session_dir,
+    path = disabled_direct_file,
+    oldContent = "before\n",
+    newContent = "after\n",
+    kind = "update",
+  }, function(result)
+    disabled_direct_result = result
+  end)
+  local disabled_direct_session = nil
+  vim.wait(1000, function()
+    disabled_direct_session = patch_session._active_session(0)
+    return disabled_direct_session and disabled_direct_session.blocks[1]
+  end, 20)
+  assert(
+    disabled_direct_session and disabled_direct_session.blocks[1],
+    "Pi edit bridge should allow disabling the default temp-directory direct-write policy"
+  )
+  patch_session._accept_block(disabled_direct_session, disabled_direct_session.blocks[1])
+  vim.wait(1000, function()
+    return disabled_direct_result ~= nil
+  end, 20)
+  assert(disabled_direct_result and disabled_direct_result.success, "disabled direct-write review should complete")
+
+  local direct_dir = vim.fs.joinpath(session_dir, "pi-direct-write")
+  vim.fn.mkdir(direct_dir, "p")
+  local escape_link = nil
+  local dangling_escape_link = nil
+  if vim.fn.has("win32") == 0 then
+    escape_link = vim.fs.joinpath(direct_dir, "escape")
+    local linked = vim.uv.fs_symlink(session_dir, escape_link)
+    assert(linked, "Pi direct-write smoke should create a symlink escape probe")
+    dangling_escape_link = vim.fs.joinpath(direct_dir, "dangling-escape")
+    linked = vim.uv.fs_symlink(vim.fs.joinpath(session_dir, "missing-outside.txt"), dangling_escape_link)
+    assert(linked, "Pi direct-write smoke should create a dangling symlink escape probe")
+  end
+  local callback_saw_defaults = false
+  local callback_matching_is_safe = false
+  coact.setup({
+    provider = "pi",
+    providers = {
+      pi = {
+        edit_bridge = {
+          direct_write = function(allowlist, context)
+            callback_saw_defaults = #allowlist:paths() > 0
+              and (not context.os_tmpdir or allowlist:contains(context.os_tmpdir))
+            allowlist:clear()
+            allowlist:add(direct_dir)
+            callback_matching_is_safe = allowlist:contains(vim.fs.joinpath(direct_dir, "nested", "file.txt"))
+              and not allowlist:contains(direct_dir .. "-sibling/file.txt")
+              and (not escape_link or not allowlist:contains(vim.fs.joinpath(escape_link, "outside.txt")))
+              and (not dangling_escape_link or not allowlist:contains(dangling_escape_link))
+          end,
+        },
+      },
+    },
+  })
+  assert(callback_saw_defaults, "Pi direct-write configuration should run after the OS temp defaults")
+  assert(
+    callback_matching_is_safe,
+    "Pi direct-write matching should reject prefix siblings and paths that escape through symlinks"
+  )
+  if escape_link then
+    vim.uv.fs_unlink(escape_link)
+    vim.uv.fs_unlink(dangling_escape_link)
+  end
+
+  local direct_file = vim.fs.joinpath(direct_dir, "write.txt")
+  local direct_result = nil
+  local current_before_direct_write = vim.api.nvim_get_current_buf()
+  pi_bridge.review_payload_async({
+    toolName = "write",
+    toolCallId = "pi-write-direct-smoke",
+    cwd = session_dir,
+    path = direct_file,
+    oldContent = "",
+    newContent = "written without an interactive window\n",
+    kind = "add",
+  }, function(result)
+    direct_result = result
+  end)
+  vim.wait(1000, function()
+    return direct_result ~= nil
+  end, 20)
+  assert(
+    direct_result
+      and direct_result.success
+      and direct_result.acceptedBlocks == 1
+      and not direct_result.summary:match("USER APPROVAL COMMENTS")
+      and direct_result.directWrite == nil
+      and direct_result.bypassed == nil,
+    "allowlisted Pi writes should look like uncommented full human approval in tool feedback"
+  )
+  assert(
+    vim.api.nvim_get_current_buf() == current_before_direct_write
+      and vim.fn.readfile(direct_file)[1] == "written without an interactive window",
+    "allowlisted Pi writes should apply in the background without changing the active buffer"
+  )
+
   local bridge_file = vim.fs.joinpath(session_dir, "pi-bridge.txt")
   vim.fn.writefile({ "red", "green", "blue" }, bridge_file)
   local bridge_result = nil
