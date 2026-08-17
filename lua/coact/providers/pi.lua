@@ -1336,30 +1336,62 @@ local function tree_command_message(params)
   return "/coact-nvim-tree " .. (ok and encoded or tostring(initial))
 end
 
-local function set_open_sync(params, sync, message)
+local function sync_thread(params)
   local thread_id = util.value(params and (params.threadId or params.thread_id or params.conversationId))
   if not thread_id then
-    return
+    return nil
   end
   local ok, coact_state = pcall(require, "coact.state")
-  if not ok then
+  return ok and coact_state.ensure_thread(thread_id) or nil
+end
+
+local function render_sync_state(thread)
+  local buffers_ok, buffers = pcall(require, "coact.buffers")
+  if buffers_ok and thread and thread.bufnr then
+    buffers.schedule_render(thread.id)
+  end
+end
+
+local function begin_open_sync(params)
+  local thread = sync_thread(params)
+  if not thread then
+    return nil
+  end
+  thread.sync_revision = (tonumber(thread.sync_revision) or 0) + 1
+  thread.sync = "hydrating"
+  thread.sync_message = "Loading conversation history…"
+  render_sync_state(thread)
+  return {
+    thread = thread,
+    revision = thread.sync_revision,
+  }
+end
+
+local function finish_open_sync(operation)
+  local thread = operation and operation.thread or nil
+  if not thread or thread.sync_revision ~= operation.revision then
     return
   end
-  local thread = coact_state.ensure_thread(thread_id)
-  thread.sync = sync
-  thread.sync_message = message
-  local buffers_ok, buffers = pcall(require, "coact.buffers")
-  if buffers_ok and thread.bufnr then
-    buffers.schedule_render(thread_id)
-  end
+  thread.sync = "clean"
+  thread.sync_message = nil
+  render_sync_state(thread)
 end
 
 local function read_current_thread(rpc, params, callback, opts)
   opts = opts or {}
-  set_open_sync(params, "hydrating", "Loading conversation history…")
+  local sync_operation = begin_open_sync(params)
+  local completed = false
+  local function finish(err, result)
+    if completed then
+      return
+    end
+    completed = true
+    finish_open_sync(sync_operation)
+    callback(err, result)
+  end
   rpc._request_message("get_state", {}, function(err, state_result)
     if err then
-      callback(err, nil)
+      finish(err, nil)
       return
     end
     local thread = thread_from_state(state_result, params)
@@ -1372,15 +1404,15 @@ local function read_current_thread(rpc, params, callback, opts)
         rpc._request_message("get_messages", {}, function(messages_err, messages_result)
           if messages_err then
             if opts.require_messages == true then
-              callback(messages_err, nil)
+              finish(messages_err, nil)
             else
-              callback(nil, { thread = thread })
+              finish(nil, { thread = thread })
             end
             return
           end
           thread.turns =
             M._turns_from_messages(messages_result and messages_result.messages, thread.id, branch_snapshot)
-          callback(nil, { thread = thread })
+          finish(nil, { thread = thread })
         end)
       end)
     end)

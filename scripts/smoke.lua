@@ -2026,6 +2026,68 @@ do
         and vim.deep_equal(refresh_calls, { "get_state", "get_session_stats", "prompt", "get_messages" }),
       "Pi compaction refresh should replace stale turns with the compaction-aware active context"
     )
+    assert(
+      refresh_thread.sync == "clean" and refresh_thread.sync_message == nil,
+      "Pi history refresh should settle its hydration state after replacing the active context"
+    )
+
+    local overlapping_thread = state.ensure_thread("pi:overlapping-refresh", { sync = "clean" })
+    local held_state_callbacks = {}
+    local overlapping_results = 0
+    local function overlapping_client()
+      return {
+        _request_message = function(method, _, callback)
+          if method == "get_state" then
+            table.insert(held_state_callbacks, callback)
+          elseif method == "get_session_stats" then
+            callback(nil, { tokens = { total = 1 } })
+          elseif method == "prompt" then
+            callback(nil, {})
+          elseif method == "get_messages" then
+            callback(nil, { messages = {} })
+          else
+            error("unexpected overlapping Pi refresh request: " .. tostring(method))
+          end
+        end,
+      }
+    end
+    pi_provider._refresh_current_thread(overlapping_client(), { threadId = overlapping_thread.id }, function(err)
+      assert(not err, "first overlapping Pi refresh should succeed")
+      overlapping_results = overlapping_results + 1
+    end)
+    pi_provider._refresh_current_thread(overlapping_client(), { threadId = overlapping_thread.id }, function(err)
+      assert(not err, "second overlapping Pi refresh should succeed")
+      overlapping_results = overlapping_results + 1
+    end)
+    assert(
+      #held_state_callbacks == 2 and overlapping_thread.sync == "hydrating",
+      "overlapping Pi refreshes should share one observable hydration phase"
+    )
+    held_state_callbacks[1](nil, { sessionId = "overlapping-refresh", sessionName = "Older refresh" })
+    assert(
+      overlapping_results == 1 and overlapping_thread.sync == "hydrating",
+      "a stale Pi refresh completion must not clear a newer hydration operation"
+    )
+    held_state_callbacks[2](nil, { sessionId = "overlapping-refresh", sessionName = "Newer refresh" })
+    assert(
+      overlapping_results == 2 and overlapping_thread.sync == "clean" and overlapping_thread.sync_message == nil,
+      "the newest Pi refresh completion should settle the hydration state"
+    )
+
+    local failed_refresh_thread = state.ensure_thread("pi:failed-refresh", { sync = "clean" })
+    local failed_refresh_error
+    pi_provider._refresh_current_thread({
+      _request_message = function(method, _, callback)
+        assert(method == "get_state", "failed Pi refresh should stop at get_state")
+        callback({ message = "refresh failed" }, nil)
+      end,
+    }, { threadId = failed_refresh_thread.id }, function(err)
+      failed_refresh_error = err
+    end)
+    assert(
+      failed_refresh_error and failed_refresh_thread.sync == "clean" and failed_refresh_thread.sync_message == nil,
+      "failed Pi history refresh should also settle its transient hydration state"
+    )
     vim.api.nvim_buf_delete(summary_buf, { force = true })
   end)();
   (function()
