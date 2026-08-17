@@ -101,6 +101,19 @@ local function compose_developer_instructions(value)
   return tostring(value) .. "\n\n" .. instruction
 end
 
+local function uuid_v4()
+  local bytes = { string.byte(vim.uv.random(16), 1, 16) }
+  bytes[7] = bit.bor(bit.band(bytes[7], 0x0f), 0x40)
+  bytes[9] = bit.bor(bit.band(bytes[9], 0x3f), 0x80)
+  return table.concat({
+    string.format("%02x%02x%02x%02x", unpack(bytes, 1, 4)),
+    string.format("%02x%02x", unpack(bytes, 5, 6)),
+    string.format("%02x%02x", unpack(bytes, 7, 8)),
+    string.format("%02x%02x", unpack(bytes, 9, 10)),
+    string.format("%02x%02x%02x%02x%02x%02x", unpack(bytes, 11, 16)),
+  }, "-")
+end
+
 local function thread_start_params(opts)
   opts = opts or {}
   local cfg = config.get().thread
@@ -126,6 +139,9 @@ local function thread_start_params(opts)
     experimentalRawEvents = false,
     persistExtendedHistory = false,
   }
+  if providers.is("pi") and opts.session_id then
+    params.sessionId = opts.session_id
+  end
   local hook_config = require("coact.native_apply_patch_hook").runtime_config()
   if hook_config then
     params.config = hook_config
@@ -219,8 +235,62 @@ function M.setup(opts)
   did_setup = true
 end
 
+local function set_thread_open_state(thread, lifecycle, sync, message, err)
+  if not thread then
+    return
+  end
+  thread.lifecycle = lifecycle
+  thread.sync = sync
+  thread.sync_message = message
+  thread.last_error = err and tostring(err.message or err) or nil
+  if lifecycle == "starting" and sync == "starting" then
+    thread.generation = "idle"
+    thread.status_message = nil
+    thread.active_turn_id = nil
+  end
+end
+
+local function finish_open_thread(thread)
+  set_thread_open_state(thread, "ready", "clean", nil, nil)
+  if thread.winid and vim.api.nvim_win_is_valid(thread.winid) then
+    buffers.render(thread.id)
+    buffers.refresh_composer(thread)
+  else
+    buffers.open(thread.id)
+  end
+end
+
 function M.new_thread(opts)
   opts = opts or {}
+  if providers.is("pi") then
+    setup_once()
+    opts.session_id = opts.session_id or uuid_v4()
+    local thread_id = "pi:" .. opts.session_id
+    local thread = state.update_thread_from_payload({
+      id = thread_id,
+      cwd = opts.cwd or config.cwd(),
+      status = "starting",
+      name = "New Pi session",
+      preview = "New Pi session",
+      sessionId = opts.session_id,
+    })
+    set_thread_open_state(thread, "starting", "starting", "Starting Pi execution unit…")
+    buffers.open(thread_id)
+    rpc.request("thread/start", thread_start_params(opts), function(err, result)
+      if err then
+        set_thread_open_state(thread, "failed", "failed", "Could not start Pi session", err)
+        buffers.schedule_render(thread_id)
+        util.notify("thread/start failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
+        return
+      end
+      thread = state.update_thread_from_payload(result.thread)
+      finish_open_thread(thread)
+      if opts.prompt and opts.prompt ~= "" then
+        M.submit_text(opts.prompt, thread.id)
+      end
+    end)
+    return
+  end
   ensure_server(function()
     rpc.request("thread/start", thread_start_params(opts), function(err, result)
       if err then
@@ -261,7 +331,8 @@ function M.open(thread_id)
   end)
 end
 
-function M.resume(thread_id)
+function M.resume(thread_id, opts)
+  opts = opts or {}
   if not thread_id or thread_id == "" then
     return util.notify("usage: :Coact resume <thread-id>", vim.log.levels.WARN)
   end
@@ -275,20 +346,38 @@ function M.resume(thread_id)
     buffers.open(thread_id)
     return
   end
-  ensure_server(function()
+  local function request_resume()
     rpc.request(
       "thread/resume",
       { threadId = thread_id, excludeTurns = false, persistExtendedHistory = false },
       function(err, result)
+        local thread = state.get_thread(thread_id)
         if err then
+          set_thread_open_state(thread, "failed", "failed", "Could not restore Pi session", err)
+          if thread and thread.bufnr then
+            buffers.schedule_render(thread_id)
+          end
           util.notify("thread/resume failed: " .. tostring(err.message or err), vim.log.levels.ERROR)
           return
         end
-        local thread = state.update_thread_from_payload(result.thread)
-        buffers.open(thread.id)
+        thread = state.update_thread_from_payload(result.thread)
+        finish_open_thread(thread)
       end
     )
-  end)
+  end
+  if providers.is("pi") then
+    setup_once()
+    local payload = type(opts.thread) == "table" and vim.deepcopy(opts.thread) or { id = thread_id }
+    payload.id = thread_id
+    payload.cwd = util.value(payload.cwd) or config.cwd()
+    payload.status = "starting"
+    local thread = state.update_thread_from_payload(payload)
+    set_thread_open_state(thread, "starting", "starting", "Starting Pi execution unit…")
+    buffers.open(thread_id)
+    request_resume()
+    return
+  end
+  ensure_server(request_resume)
 end
 
 function M.submit_text(text, thread_id, opts)
@@ -438,7 +527,7 @@ function M.stop()
 end
 
 function M.list_threads(callback)
-  ensure_server(function()
+  local function request_list()
     rpc.request("thread/list", {
       limit = 50,
       sortKey = "updated_at",
@@ -463,7 +552,13 @@ function M.list_threads(callback)
         end
       end
     end)
-  end)
+  end
+  setup_once()
+  if providers.current().thread_list_requires_transport == false then
+    request_list()
+  else
+    ensure_server(request_list)
+  end
 end
 
 function M.pick_thread()

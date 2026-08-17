@@ -31,7 +31,13 @@ A thread buffer is named:
 
 The transcript is rendered in a read-only `coact-history` thread buffer.
 Opening a thread starts in preview state, where the transcript uses the full UI
-height. Press an insert-intent key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`,
+height. Pi opens the buffer immediately from local metadata and renders a
+transient session-loading spinner while its independent execution unit starts,
+restores the session, and hydrates history. This loading block is renderer
+chrome rather than transcript content; failures remain visible in the session
+buffer. New Pi sessions receive their final id before launch, so their loading
+buffer already belongs to the eventual execution unit. Press an insert-intent
+key such as `i`, `a`, `I`, `A`, `o`, `O`, `gi`,
 `c`, `cc`, or `S` to enter compose state and open the unnamed `coact-input`
 composer below it. Type there and press CTRL-S or normal-mode ENTER to submit;
 normal-mode `q` returns to preview without discarding the draft. Press
@@ -185,6 +191,9 @@ To use Pi as the active provider:
         -- Optional isolation. Omit these to use Pi's normal ~/.pi/agent state.
         config_dir = nil,
         session_dir = nil,
+        picker_prewarm = true,
+        prewarm_delay_ms = 50,
+        prewarm_idle_timeout_ms = 60000,
         edit_bridge = {
           enabled = true,
           timeout_sec = 600,
@@ -213,7 +222,12 @@ units. Concurrent workspace edits retain the existing edit/review behavior.
 
 The thread picker reads Pi's
 `parentSession` metadata, groups forked session files beneath their parent with
-tree connectors, and keeps every fork independently selectable. `/reasoning`
+tree connectors, and keeps every fork independently selectable. Local JSONL
+metadata is cached by file size and modification time, so displaying the picker
+does not start Pi or reparse unchanged sessions. After the picker is visible,
+`picker_prewarm` starts one unbound client after `prewarm_delay_ms`. A selected
+session claims the same client even while it is starting; an unclaimed client
+stops after `prewarm_idle_timeout_ms`. `/reasoning`
 queries Pi for the current model's available thinking levels when the picker
 opens, so model-declared holes and extended levels such as `max` are honored.
 Submitting another prompt while one Pi thread is generating queues it as a Pi

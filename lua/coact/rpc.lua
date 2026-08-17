@@ -249,6 +249,16 @@ local function register_native_hook_trust(callback)
   end)
 end
 
+function M.prewarm(callback)
+  if providers.is("pi") then
+    return pi_rpc().prewarm(callback)
+  end
+  if callback then
+    callback(nil, false)
+  end
+  return nil
+end
+
 function M.start(callback)
   if providers.is("pi") then
     return pi_rpc().start(callback)

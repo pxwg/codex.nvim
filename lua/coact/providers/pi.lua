@@ -7,6 +7,7 @@ local M = {
   agent_label = "Pi",
   protocol = "pi-rpc",
   transport_scope = "thread",
+  thread_list_requires_transport = false,
   slash = {
     commands = {
       behavior = true,
@@ -161,6 +162,14 @@ local function provider_opts(opts)
   return (opts.providers and opts.providers.pi) or {}
 end
 
+function M.picker_prewarm_options(opts)
+  local pi = provider_opts(opts)
+  return {
+    enabled = pi.picker_prewarm ~= false,
+    delay_ms = math.max(0, tonumber(pi.prewarm_delay_ms) or 50),
+  }
+end
+
 local function list_copy(value)
   if type(value) == "table" then
     return vim.deepcopy(value)
@@ -220,11 +229,14 @@ local function effective_thinking(opts)
   return pi.thinking or thread.reasoning_effort
 end
 
-function M.command(opts)
+function M.command(opts, launch)
   opts = opts or config.get()
+  launch = launch or {}
   local pi = provider_opts(opts)
   local command = pi.command or { "pi", "--mode", "rpc" }
   local args = {}
+  append_arg(args, "--session-id", launch.session_id)
+  append_arg(args, "--session", launch.session_file)
   append_arg(args, "--provider", pi.provider or (opts.thread and opts.thread.model_provider))
   append_arg(args, "--model", effective_model(opts))
   append_arg(args, "--thinking", effective_thinking(opts))
@@ -275,10 +287,8 @@ function M.initialize(rpc, callback)
       callback(err, nil)
       return
     end
-    local thread_id = M._remember_state(result)
-    request_session_stats(rpc, thread_id, function()
-      callback(nil, result or true)
-    end)
+    M._remember_state(result)
+    callback(nil, result or true)
   end)
 end
 
@@ -885,10 +895,9 @@ local function annotate_current_thread_tree_entry_ids(thread_id, snapshot)
   return annotate_thread_tree_entry_ids(thread, snapshot)
 end
 
-local function read_session_info(path, cwd_filter)
-  if not readable_file(path) then
-    return nil
-  end
+local session_info_cache = {}
+
+local function read_session_info_uncached(path)
   local lines = vim.fn.readfile(path)
   local header = json_decode(lines[1])
   if type(header) ~= "table" or header.type ~= "session" or not util.value(header.id) then
@@ -896,9 +905,6 @@ local function read_session_info(path, cwd_filter)
   end
   local cwd = normalize_path(util.value(header.cwd)) or normalize_cwd()
   local parent_session_path = normalize_path(util.value(header.parentSession))
-  if cwd_filter and normalize_cwd(cwd_filter) ~= cwd then
-    return nil
-  end
 
   local first_message
   local name
@@ -951,6 +957,33 @@ local function read_session_info(path, cwd_filter)
   }
 end
 
+local function read_session_info(path, cwd_filter)
+  if not readable_file(path) then
+    session_info_cache[path] = nil
+    return nil
+  end
+  local stat = vim.uv.fs_stat(path)
+  local cached = session_info_cache[path]
+  local mtime = stat and stat.mtime and (stat.mtime.sec or stat.mtime.tv_sec) or 0
+  local mtime_nsec = stat and stat.mtime and (stat.mtime.nsec or stat.mtime.tv_nsec) or 0
+  local size = stat and stat.size or 0
+  if not cached or cached.mtime ~= mtime or cached.mtime_nsec ~= mtime_nsec or cached.size ~= size then
+    local info = read_session_info_uncached(path)
+    cached = {
+      mtime = mtime,
+      mtime_nsec = mtime_nsec,
+      size = size,
+      info = info,
+    }
+    session_info_cache[path] = cached
+  end
+  local info = cached.info and vim.deepcopy(cached.info) or nil
+  if info and cwd_filter and normalize_cwd(cwd_filter) ~= info.cwd then
+    return nil
+  end
+  return info
+end
+
 local function list_local_sessions(cwd, opts)
   cwd = normalize_cwd(cwd)
   local dir, filter_by_cwd = configured_session_dir(cwd, opts)
@@ -959,16 +992,24 @@ local function list_local_sessions(cwd, opts)
     return {}
   end
   local sessions = {}
+  local seen_paths = {}
   while true do
     local name, kind = vim.uv.fs_scandir_next(handle)
     if not name then
       break
     end
     if kind == "file" and name:match("%.jsonl$") then
-      local info = read_session_info(vim.fs.joinpath(dir, name), filter_by_cwd and cwd or nil)
+      local path = vim.fs.joinpath(dir, name)
+      seen_paths[path] = true
+      local info = read_session_info(path, filter_by_cwd and cwd or nil)
       if info then
         table.insert(sessions, info)
       end
+    end
+  end
+  for path in pairs(session_info_cache) do
+    if vim.fs.dirname(path) == dir and not seen_paths[path] then
+      session_info_cache[path] = nil
     end
   end
   local by_path = {}
@@ -1295,8 +1336,27 @@ local function tree_command_message(params)
   return "/coact-nvim-tree " .. (ok and encoded or tostring(initial))
 end
 
+local function set_open_sync(params, sync, message)
+  local thread_id = util.value(params and (params.threadId or params.thread_id or params.conversationId))
+  if not thread_id then
+    return
+  end
+  local ok, coact_state = pcall(require, "coact.state")
+  if not ok then
+    return
+  end
+  local thread = coact_state.ensure_thread(thread_id)
+  thread.sync = sync
+  thread.sync_message = message
+  local buffers_ok, buffers = pcall(require, "coact.buffers")
+  if buffers_ok and thread.bufnr then
+    buffers.schedule_render(thread_id)
+  end
+end
+
 local function read_current_thread(rpc, params, callback, opts)
   opts = opts or {}
+  set_open_sync(params, "hydrating", "Loading conversation history…")
   rpc._request_message("get_state", {}, function(err, state_result)
     if err then
       callback(err, nil)
@@ -1340,15 +1400,7 @@ function M.custom_request(rpc, method, params, callback)
     return true
   end
   if method == "thread/start" then
-    rpc._request_message("new_session", {}, function(err, result)
-      if err then
-        callback(err, nil)
-        return
-      end
-      if result and result.cancelled then
-        callback({ message = "Pi new_session was cancelled" }, nil)
-        return
-      end
+    local function finish_from_current_state()
       rpc._request_message("get_state", {}, function(state_err, state_result)
         if state_err then
           callback(state_err, nil)
@@ -1360,6 +1412,21 @@ function M.custom_request(rpc, method, params, callback)
           callback(nil, { thread = thread })
         end)
       end)
+    end
+    if params._coactUseInitialSession == true then
+      finish_from_current_state()
+      return true
+    end
+    rpc._request_message("new_session", {}, function(err, result)
+      if err then
+        callback(err, nil)
+        return
+      end
+      if result and result.cancelled then
+        callback({ message = "Pi new_session was cancelled" }, nil)
+        return
+      end
+      finish_from_current_state()
     end)
     return true
   end
@@ -2516,6 +2583,11 @@ function M.health(opts, health)
     else
       health.error(("Pi executable does not appear to support RPC mode: %s"):format(vim.trim(help_err or "")))
     end
+    if help_text and help_text:match("%-%-session%-id") then
+      health.ok("Pi executable supports preassigned session ids")
+    else
+      health.error("Pi executable does not support --session-id, which Coact uses for immediate new-session buffers")
+    end
   else
     health.error(("Pi executable is not available: %s"):format(executable or health.command_label(command)))
   end
@@ -2527,6 +2599,9 @@ M._prompt_from_input = prompt_from_input
 M._thread_from_state = thread_from_state
 M._session_dir_for_cwd = configured_session_dir
 M._list_local_sessions = list_local_sessions
+M._clear_session_info_cache = function()
+  session_info_cache = {}
+end
 M._resolve_session_file = resolve_session_file
 M._normalize_model = normalize_model
 M._message_items = message_items

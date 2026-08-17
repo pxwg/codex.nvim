@@ -792,11 +792,20 @@ local busy_generations = {
   cancelling = true,
 }
 
+local busy_sync_states = {
+  starting = true,
+  restoring = true,
+  hydrating = true,
+}
+
 local function thread_busy(thread)
-  return thread and busy_generations[thread.generation] == true
+  return thread and (busy_generations[thread.generation] == true or busy_sync_states[thread.sync] == true)
 end
 
 local function spinner_label(thread)
+  if busy_generations[thread.generation] ~= true and busy_sync_states[thread.sync] == true then
+    return thread.sync_message or "Opening provider session…"
+  end
   return thread.generation == "tool_running" and "tooling"
     or thread.generation == "patch_review" and "reviewing patch"
     or thread.generation == "waiting_backend" and "waiting"
@@ -808,8 +817,17 @@ local function spinner_label(thread)
 end
 
 local function spinner_virt_text(thread)
+  if thread.sync == "failed" then
+    local message = tostring(thread.sync_message or "Could not open provider session")
+    if thread.last_error and thread.last_error ~= "" then
+      message = message .. " · " .. tostring(thread.last_error):gsub("\n", " ")
+    end
+    return { { "×  Coact · " .. message, "DiagnosticError" } }
+  end
   local index = (math.floor(util.now_ms() / spinner_interval_ms) % #spinner_frames) + 1
-  return { { spinner_frames[index] .. "  Coact " .. spinner_label(thread), "CoactSpinner" } }
+  local separator = busy_generations[thread.generation] ~= true and busy_sync_states[thread.sync] == true and " · "
+    or " "
+  return { { spinner_frames[index] .. "  Coact" .. separator .. spinner_label(thread), "CoactSpinner" } }
 end
 
 local function apply_spinner_mark(thread, bufnr, mark)
@@ -1841,7 +1859,7 @@ function M.render(thread)
     end
   end
 
-  if thread_busy(thread) then
+  if thread_busy(thread) or thread.sync == "failed" then
     local line = add(lines, " ")
     mark_spinner(thread, line)
     add(lines, "")

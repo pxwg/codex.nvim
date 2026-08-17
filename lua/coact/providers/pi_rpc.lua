@@ -7,6 +7,7 @@ local M = {
   by_thread = {},
   starting = {},
   utility = nil,
+  prewarm_generation = 0,
   next_client_id = 1,
 }
 
@@ -117,7 +118,7 @@ local function client_api(client)
   return client
 end
 
-local function new_client()
+local function new_client(launch)
   local id = ("pi-client-%d"):format(M.next_client_id)
   M.next_client_id = M.next_client_id + 1
   local runtime = provider.new_runtime()
@@ -126,6 +127,8 @@ local function new_client()
   local client = client_api(setmetatable({
     id = id,
     runtime = runtime,
+    launch = launch or {},
+    speculative = launch and launch.speculative == true or false,
     thread_id = nil,
     job_id = nil,
     next_id = 1,
@@ -198,6 +201,16 @@ end
 
 local function dispatch(client, message)
   if type(message) ~= "table" or not current_owner(client) then
+    return
+  end
+  if client.speculative and message.type == "extension_ui_request" then
+    if message.id ~= nil then
+      pcall(client.send, client, {
+        type = "extension_ui_response",
+        id = message.id,
+        cancelled = true,
+      })
+    end
     return
   end
   if type(provider.handle_raw_message) == "function" then
@@ -274,10 +287,16 @@ local function feed_stderr(client, data)
     return
   end
   local text = table.concat(data, "\n")
+  if client.launch and client.launch.session_id then
+    text = text:gsub("Warning: No project session found with id '[^']+'; creating a new session with that id%.?\n?", "")
+  end
   if text == "" then
     return
   end
   client.stderr_tail = text
+  if client.speculative then
+    return
+  end
   local stderr_handler = handlers().stderr
   if stderr_handler then
     schedule(function()
@@ -353,7 +372,7 @@ function Client:start(callback)
   self.stopping = false
 
   local opts = config.get()
-  local command = provider.command(opts)
+  local command = provider.command(opts, self.launch)
   local env = sanitize_malloc_env_enabled(opts) and app_server_env() or {}
   env.COACT_NVIM_PI_CLIENT_ID = self.id
   if type(provider.env) == "function" then
@@ -362,7 +381,12 @@ function Client:start(callback)
   end
   local prepare_err
   if type(provider.prepare_command) == "function" then
-    command, env, prepare_err = provider.prepare_command(command, env, { client_id = self.id })
+    command, env, prepare_err = provider.prepare_command(command, env, {
+      client_id = self.id,
+      session_id = self.launch.session_id,
+      session_file = self.launch.session_file,
+      speculative = self.speculative,
+    })
     if not command then
       self.starting = false
       remove_client(self)
@@ -397,7 +421,9 @@ function Client:start(callback)
             for _, entry in pairs(pending) do
               entry.callback({ code = code, message = "Pi provider exited" }, nil)
             end
-            util.notify("Pi provider exited with code " .. tostring(code), vim.log.levels.ERROR)
+            if not self.speculative then
+              util.notify("Pi provider exited with code " .. tostring(code), vim.log.levels.ERROR)
+            end
           end
           if #self.start_callbacks > 0 then
             flush_start_callbacks(self, { code = code, message = "Pi provider exited during initialization" }, nil)
@@ -524,6 +550,7 @@ local function bind_client(client, thread_id)
     M.by_thread[client.thread_id] = nil
   end
   client.thread_id = thread_id
+  client.speculative = false
   client.runtime.bound_thread_id = thread_id
   client.runtime.current_thread_id = thread_id
   client.runtime.suppress_state_updates = false
@@ -560,8 +587,8 @@ local function any_running_client()
   return nil
 end
 
-local function start_new_client(callback)
-  local client = new_client()
+local function start_new_client(callback, launch)
+  local client = new_client(launch)
   client:start(function(err)
     if err then
       callback(err, nil)
@@ -574,9 +601,13 @@ end
 
 local function acquire_unbound_client(callback)
   local utility = M.utility
-  if utility and utility.initialized and utility:is_running() and not utility.thread_id then
+  if utility and not utility.thread_id and (utility.starting or utility:is_running()) then
     M.utility = nil
-    callback(nil, utility)
+    M.prewarm_generation = M.prewarm_generation + 1
+    utility.speculative = false
+    utility:start(function(err)
+      callback(err, err and nil or utility)
+    end)
     return utility
   end
   return start_new_client(callback)
@@ -621,6 +652,8 @@ local function finish_waiters(thread_id, err, client, result)
   end
 end
 
+local set_thread_open_state
+
 local function ensure_thread_client(thread_id, callback)
   local existing = M.by_thread[thread_id]
   if existing and existing.initialized and existing:is_running() then
@@ -632,6 +665,7 @@ local function ensure_thread_client(thread_id, callback)
     return nil
   end
   M.starting[thread_id] = { callback }
+  set_thread_open_state(thread_id, "starting", "starting", "Starting Pi execution unit…")
   local session_file = session_file_for_thread(thread_id)
   if not session_file then
     finish_waiters(
@@ -644,9 +678,11 @@ local function ensure_thread_client(thread_id, callback)
   end
   return acquire_unbound_client(function(start_err, client)
     if start_err then
+      set_thread_open_state(thread_id, "failed", "failed", "Could not start Pi", start_err)
       finish_waiters(thread_id, start_err, nil, nil)
       return
     end
+    set_thread_open_state(thread_id, "starting", "restoring", "Restoring Pi session…")
     request_on_client(client, "thread/resume", {
       threadId = thread_id,
       sessionFile = session_file,
@@ -656,6 +692,7 @@ local function ensure_thread_client(thread_id, callback)
     }, function(resume_err, result)
       if resume_err then
         client:stop()
+        set_thread_open_state(thread_id, "failed", "failed", "Could not restore Pi session", resume_err)
         finish_waiters(thread_id, resume_err, nil, nil)
         return
       end
@@ -687,6 +724,22 @@ local global_request_methods = {
   ["permissionProfile/list"] = true,
   ["skills/list"] = true,
 }
+
+set_thread_open_state = function(thread_id, lifecycle, sync, message, err)
+  local ok, state = pcall(require, "coact.state")
+  if not ok or not thread_id then
+    return
+  end
+  local thread = state.ensure_thread(thread_id)
+  thread.lifecycle = lifecycle or thread.lifecycle
+  thread.sync = sync or thread.sync
+  thread.sync_message = message
+  thread.last_error = err and tostring(err.message or err) or nil
+  local buffers_ok, buffers = pcall(require, "coact.buffers")
+  if buffers_ok and thread.bufnr then
+    buffers.schedule_render(thread_id)
+  end
+end
 
 local function list_threads(params)
   local threads = provider._list_local_sessions(params.cwd or config.cwd())
@@ -727,6 +780,10 @@ local function list_threads(params)
       end
     end
   end
+  local limit = tonumber(params.limit)
+  if limit and limit > 0 and #threads > limit then
+    threads = vim.list_slice(threads, 1, limit)
+  end
   return threads
 end
 
@@ -736,6 +793,44 @@ local function target_thread_id(params)
     or util.value(params.thread_id)
     or util.value(params.conversationId)
     or current_thread_id()
+end
+
+function M.prewarm(callback)
+  callback = callback or function() end
+  local pi = ((config.get().providers or {}).pi or {})
+  if pi.picker_prewarm == false then
+    callback(nil, false)
+    return nil
+  end
+  local utility = M.utility
+  if utility and not utility.thread_id and (utility.starting or utility:is_running()) then
+    utility:start(function(err)
+      callback(err, not err)
+    end)
+    return utility
+  end
+
+  M.prewarm_generation = M.prewarm_generation + 1
+  local generation = M.prewarm_generation
+  utility = new_client({ speculative = true })
+  M.utility = utility
+  utility:start(function(err)
+    if err and M.utility == utility then
+      M.utility = nil
+    end
+    callback(err, not err)
+  end)
+
+  local timeout = math.max(0, tonumber(pi.prewarm_idle_timeout_ms) or 60000)
+  if timeout > 0 then
+    vim.defer_fn(function()
+      if generation == M.prewarm_generation and M.utility == utility and not utility.thread_id then
+        M.utility = nil
+        utility:stop()
+      end
+    end, timeout)
+  end
+  return utility
 end
 
 function M.start(callback)
@@ -767,28 +862,50 @@ function M.request(method, params, callback)
   params = params or {}
 
   if method == "thread/start" then
-    return acquire_unbound_client(function(start_err, client)
-      if start_err then
-        callback(start_err, nil)
-        return
-      end
-      request_on_client(client, method, params, function(err, result)
-        if err then
-          client:stop()
-          callback(err, nil)
+    local requested_session_id = util.value(params.sessionId or params.session_id)
+    local expected_thread_id = requested_session_id and ("pi:" .. tostring(requested_session_id)) or nil
+    local function start_with_client(start_client)
+      return start_client(function(start_err, client)
+        if start_err then
+          callback(start_err, nil)
           return
         end
-        local thread_id = result and result.thread and result.thread.id
-        local bound, bind_err = bind_client(client, thread_id)
-        if not bound then
-          client:stop()
-          callback(bind_err, nil)
-          return
+        local request_params = vim.deepcopy(params)
+        if expected_thread_id then
+          request_params.threadId = expected_thread_id
+          request_params._coactUseInitialSession = true
         end
-        result.thread.providerClientId = client.id
-        callback(nil, result)
+        request_on_client(client, method, request_params, function(err, result)
+          if err then
+            client:stop()
+            callback(err, nil)
+            return
+          end
+          local thread_id = result and result.thread and result.thread.id
+          if expected_thread_id and thread_id ~= expected_thread_id then
+            client:stop()
+            callback({
+              message = ("Pi created %s while %s was requested"):format(tostring(thread_id), expected_thread_id),
+            }, nil)
+            return
+          end
+          local bound, bind_err = bind_client(client, thread_id)
+          if not bound then
+            client:stop()
+            callback(bind_err, nil)
+            return
+          end
+          result.thread.providerClientId = client.id
+          callback(nil, result)
+        end)
       end)
-    end)
+    end
+    if requested_session_id then
+      return start_with_client(function(done)
+        return start_new_client(done, { session_id = tostring(requested_session_id) })
+      end)
+    end
+    return start_with_client(acquire_unbound_client)
   end
 
   if method == "thread/list" then
@@ -975,8 +1092,10 @@ function M.stop(thread_id)
   M.by_thread = {}
   M.starting = {}
   M.utility = nil
+  M.prewarm_generation = M.prewarm_generation + 1
 end
 
+M._list_threads = list_threads
 M._new_client = new_client
 M._bind_client = bind_client
 M._dispatch = dispatch

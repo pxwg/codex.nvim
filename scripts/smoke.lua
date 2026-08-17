@@ -393,6 +393,18 @@ do
     "Pi provider should use RPC mode"
   )
   assert(vim.tbl_contains(pi_command, "--offline"), "Pi provider should pass configured offline flag")
+  local targeted_pi_command = pi_provider.command(require("coact.config").get(), { session_id = "smoke-session-id" })
+  local targeted_session_arg
+  for index, part in ipairs(targeted_pi_command) do
+    if part == "--session-id" then
+      targeted_session_arg = targeted_pi_command[index + 1]
+      break
+    end
+  end
+  assert(
+    targeted_session_arg == "smoke-session-id",
+    "Pi provider should launch a new execution unit with a preassigned session id"
+  )
   local pi_bridge = require("coact.providers.pi_edit_bridge")
   assert(pi_bridge.enabled(), "Pi provider should enable the edit bridge in pair mode by default")
   local prepared_pi_command, prepared_pi_env, prepared_pi_err = pi_provider.prepare_command(pi_command, {})
@@ -1361,6 +1373,64 @@ do
     require("coact").set_statusline_visible(true, "pi:smoke-session")
     assert(pi_statusline.visible(pi_state_thread), "Coact statusline command should show status chrome")
   end)()
+  do
+    local loading_id = "pi:smoke-loading-session"
+    local loading_thread = state.ensure_thread(loading_id, {
+      title = "Loading smoke session",
+      status = "starting",
+      lifecycle = "starting",
+      sync = "starting",
+      sync_message = "Starting Pi execution unit…",
+    })
+    local render_module = require("coact.ui.render")
+    local original_render = render_module.render
+    local render_calls = 0
+    render_module.render = function(...)
+      render_calls = render_calls + 1
+      return original_render(...)
+    end
+    local loading_buf, loading_win = require("coact.buffers").open(loading_id)
+    render_module.render = original_render
+    assert(render_calls == 1, "opening a new session buffer should render its initial state only once")
+    local loading_marks =
+      vim.api.nvim_buf_get_extmarks(loading_buf, vim.api.nvim_get_namespaces()["coact.nvim"], 0, -1, { details = true })
+    local loading_text = ""
+    for _, mark in ipairs(loading_marks) do
+      for _, chunk in ipairs((mark[4] or {}).virt_text or {}) do
+        loading_text = loading_text .. tostring(chunk[1] or "")
+      end
+    end
+    assert(
+      loading_text:find("Starting Pi execution unit", 1, true),
+      "session hydration should render a transient loading spinner inside the session buffer"
+    )
+    loading_thread.sync = "failed"
+    loading_thread.sync_message = "Could not restore Pi session"
+    loading_thread.last_error = "smoke failure"
+    require("coact.buffers").render(loading_id)
+    local failed_loading_text = ""
+    for _, mark in
+      ipairs(
+        vim.api.nvim_buf_get_extmarks(
+          loading_buf,
+          vim.api.nvim_get_namespaces()["coact.nvim"],
+          0,
+          -1,
+          { details = true }
+        )
+      )
+    do
+      for _, chunk in ipairs((mark[4] or {}).virt_text or {}) do
+        failed_loading_text = failed_loading_text .. tostring(chunk[1] or "")
+      end
+    end
+    assert(
+      failed_loading_text:find("Could not restore Pi session", 1, true)
+        and failed_loading_text:find("smoke failure", 1, true),
+      "session hydration failures should remain visible without entering transcript content"
+    )
+    pcall(vim.api.nvim_win_close, loading_win, true)
+  end
   local pi_cwd = require("coact.config").cwd()
   local pi_session_dir = vim.fs.joinpath(pi_temp, "sessions")
   vim.fn.mkdir(pi_session_dir, "p")
@@ -1436,6 +1506,21 @@ do
   assert(local_pi_sessions[1].preview:match("new pi prompt"), "Pi thread preview should use the first user message")
   assert(local_pi_sessions[1].model == "openai/gpt-5", "Pi thread history should retain model metadata")
   assert(local_pi_sessions[1].reasoningEffort == "high", "Pi thread history should retain thinking metadata")
+  write_pi_session(
+    pi_new_session_file,
+    "pi-new",
+    "2026-06-15T16:47:53.744Z",
+    "new pi prompt",
+    "Renamed Pi",
+    "gpt-5",
+    true,
+    pi_old_session_file
+  )
+  local refreshed_pi_sessions = pi_provider._list_local_sessions(pi_cwd)
+  assert(
+    refreshed_pi_sessions[1].name == "Renamed Pi",
+    "Pi session metadata cache should invalidate when a JSONL file changes"
+  )
   assert(
     pi_provider._resolve_session_file(pi_cwd, "pi:pi-old") == pi_old_session_file,
     "Pi thread ids should resolve back to session files"
@@ -1467,8 +1552,18 @@ do
     "Pi thread/list should return local history instead of an empty current session"
   )
   assert(
-    pi_list_result.data[1].name == "New Pi",
+    pi_list_result.data[1].name == "Renamed Pi",
     "Pi thread/list should not overwrite local history titles with generic current state"
+  )
+  local pi_clients_before_local_list = require("coact.providers.pi_rpc").client_count()
+  local public_pi_threads
+  require("coact").list_threads(function(threads)
+    public_pi_threads = threads
+  end)
+  assert(public_pi_threads and #public_pi_threads == 2, "public Pi thread listing should use the local session index")
+  assert(
+    require("coact.providers.pi_rpc").client_count() == pi_clients_before_local_list,
+    "opening the Pi thread picker should not start an RPC process before the picker is visible"
   )
   local pi_resume_result = nil
   local pi_resume_calls = {}
@@ -2119,8 +2214,9 @@ do
 import { readFileSync } from "node:fs";
 let input = "";
 const client = process.env.COACT_NVIM_PI_CLIENT_ID || "unknown";
-let sessionId = client;
-let sessionFile = `/tmp/${client}.jsonl`;
+const sessionIdIndex = process.argv.indexOf("--session-id");
+let sessionId = sessionIdIndex >= 0 ? process.argv[sessionIdIndex + 1] : client;
+let sessionFile = `/tmp/${sessionId}.jsonl`;
 let model = { provider: "fake", id: "default" };
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\n");
 const respond = (command, data = {}) => send({
@@ -2230,6 +2326,9 @@ process.stdin.on("data", (chunk) => {
   local pi_rpc = require("coact.providers.pi_rpc")
   pi_rpc.stop()
   local routed_threads = {}
+  local prewarmed_client = pi_rpc.prewarm(function(err)
+    assert(not err, err and err.message or "Pi picker prewarm should initialize")
+  end)
   rpc.request("thread/start", { cwd = vim.fn.getcwd() }, function(err, result)
     assert(not err, err and err.message or "first Pi execution unit should start")
     routed_threads[1] = result.thread.id
@@ -2248,6 +2347,10 @@ process.stdin.on("data", (chunk) => {
   )
   assert(routed_threads[1] ~= routed_threads[2], "Pi execution units should own distinct sessions")
   assert(
+    pi_rpc.client_for_thread(routed_threads[1]) == prewarmed_client,
+    "a thread selected while picker prewarm is starting should claim that same RPC client"
+  )
+  assert(
     pi_rpc.client_for_thread(routed_threads[1]) ~= pi_rpc.client_for_thread(routed_threads[2]),
     "each Pi thread should own a distinct RPC client"
   )
@@ -2256,6 +2359,21 @@ process.stdin.on("data", (chunk) => {
       and state.get_thread(routed_threads[2]).provider_client_id == pi_rpc.client_for_thread(routed_threads[2]).id,
     "Pi thread state should retain its execution-unit identity"
   )
+  local targeted_thread
+  rpc.request("thread/start", {
+    cwd = vim.fn.getcwd(),
+    sessionId = "smoke-targeted-session",
+  }, function(err, result)
+    assert(not err, err and err.message or "targeted Pi execution unit should start")
+    targeted_thread = result.thread
+  end)
+  assert(
+    vim.wait(5000, function()
+      return targeted_thread ~= nil
+    end, 10) and targeted_thread.id == "pi:smoke-targeted-session",
+    "new Pi sessions should retain the id assigned before their loading buffer opens"
+  )
+  pi_rpc.stop(targeted_thread.id)
 
   local accepted_turns = 0
   rpc.request("turn/start", {

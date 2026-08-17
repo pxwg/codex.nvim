@@ -455,6 +455,21 @@ M._format_item = format_item
 M._session_tree = session_tree
 M._tree_prefix = tree_prefix
 
+local function schedule_provider_prewarm()
+  local provider = require("coact.providers").current()
+  if provider.transport_scope ~= "thread" or type(provider.picker_prewarm_options) ~= "function" then
+    return
+  end
+  local opts = provider.picker_prewarm_options()
+  if not opts or opts.enabled == false then
+    return
+  end
+  local delay = math.max(0, tonumber(opts.delay_ms) or 0)
+  vim.defer_fn(function()
+    require("coact.rpc").prewarm(function() end)
+  end, delay)
+end
+
 function M.threads()
   require("coact").list_threads(function(threads)
     local provider_title = require("coact.providers").title()
@@ -480,9 +495,10 @@ function M.threads()
         preview = "preview",
         confirm = function(picker, item)
           picker:close()
-          require("coact").resume(item.thread.id)
+          require("coact").resume(item.thread.id, { thread = item.thread })
         end,
       })
+      schedule_provider_prewarm()
       return
     end
 
@@ -493,9 +509,10 @@ function M.threads()
       end,
     }, function(tree_node)
       if tree_node then
-        require("coact").resume(tree_node.thread.id)
+        require("coact").resume(tree_node.thread.id, { thread = tree_node.thread })
       end
     end)
+    schedule_provider_prewarm()
   end)
 end
 

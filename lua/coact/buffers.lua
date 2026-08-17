@@ -1317,7 +1317,8 @@ function M.enter_compose(thread_or_id, opts)
   return true
 end
 
-function M.ensure(thread_id)
+function M.ensure(thread_id, opts)
+  opts = opts or {}
   local thread = state.ensure_thread(thread_id)
   if thread.bufnr and vim.api.nvim_buf_is_valid(thread.bufnr) then
     M.ensure_prompt(thread_id)
@@ -1336,12 +1337,14 @@ function M.ensure(thread_id)
   M.ensure_prompt(thread_id)
   start_history_treesitter(bufnr)
   setup_history_autocmds(bufnr)
-  M.render(thread_id, created and {} or nil)
+  if not opts.defer_render then
+    M.render(thread_id, created and {} or nil)
+  end
   return bufnr
 end
 
 function M.open(thread_id)
-  local bufnr = M.ensure(thread_id)
+  local bufnr = M.ensure(thread_id, { defer_render = true })
   local thread = state.get_thread(thread_id)
   local prompt_bufnr = M.ensure_prompt(thread_id)
   context.capture_thread_buffer(thread, vim.api.nvim_get_current_buf(), vim.api.nvim_get_current_win())
