@@ -9,11 +9,12 @@ local util = require("coact.util")
 local M = {}
 
 local ns = vim.api.nvim_create_namespace("coact.nvim")
+local render_atom_ns = vim.api.nvim_create_namespace("coact.nvim.render_atoms")
 local follow_threshold = 5
 local pending_render_timers = {}
 local pending_spinner_timers = {}
-local pending_stream_delta_timers = {}
-local pending_stream_deltas = {}
+local pending_stream_flush_timers = {}
+local pending_stream_flushes = {}
 local highlights_ready = false
 local highlights_autocmd_ready = false
 local stream_delta_flush_ms = 16
@@ -618,25 +619,45 @@ local function header_meta_virt_text(mark)
   return chunks
 end
 
+local function resolve_mark_line(bufnr, namespace, mark)
+  if not mark or not mark.extmark_id then
+    return mark and mark.line or nil
+  end
+  local pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, namespace, mark.extmark_id, {})
+  if type(pos) == "table" and #pos >= 2 then
+    mark.line = pos[1] + 1
+  end
+  return mark.line
+end
+
 local function apply_header_marks(thread, bufnr)
   for _, mark in ipairs(thread.header_marks or {}) do
+    resolve_mark_line(bufnr, ns, mark)
     local line = vim.api.nvim_buf_get_lines(bufnr, mark.line - 1, mark.line, false)[1] or ""
-    vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
+    local header_opts = {
       conceal = "",
       end_col = #line,
       virt_text = header_virt_text(mark),
       virt_text_pos = "overlay",
       priority = 2000,
       strict = false,
-    })
+    }
+    if mark.extmark_id then
+      header_opts.id = mark.extmark_id
+    end
+    mark.extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, header_opts)
     local meta = header_meta_virt_text(mark)
     if #meta > 0 then
-      vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, {
+      local meta_opts = {
         virt_text = meta,
         virt_text_pos = "right_align",
         priority = 1900,
         strict = false,
-      })
+      }
+      if mark.meta_extmark_id then
+        meta_opts.id = mark.meta_extmark_id
+      end
+      mark.meta_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, ns, mark.line - 1, 0, meta_opts)
     end
     if mark.block then
       thread.render_index[mark.line] = mark.block
@@ -687,6 +708,7 @@ local function apply_placeholder_mark(_, bufnr, mark)
   if not mark or not mark.line then
     return
   end
+  resolve_mark_line(bufnr, ns, mark)
   local opts = {
     conceal = "",
     virt_text = placeholder_virt_text(mark),
@@ -831,7 +853,11 @@ local function spinner_virt_text(thread)
 end
 
 local function apply_spinner_mark(thread, bufnr, mark)
-  if not mark or not mark.line or mark.line < 1 or mark.line > vim.api.nvim_buf_line_count(bufnr) then
+  if not mark then
+    return
+  end
+  resolve_mark_line(bufnr, ns, mark)
+  if not mark.line or mark.line < 1 or mark.line > vim.api.nvim_buf_line_count(bufnr) then
     return
   end
   local opts = {
@@ -1378,13 +1404,6 @@ local function replace_buffer_lines(bufnr, lines)
   return true
 end
 
-local function update_fold_finish(thread, range, finish)
-  if not range.fold_index or not thread.folds or not thread.folds[range.fold_index] then
-    return
-  end
-  thread.folds[range.fold_index].finish = finish
-end
-
 local function apply_manual_folds(thread, bufnr)
   bufnr = bufnr or (thread and thread.bufnr)
   if not thread or not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
@@ -1417,17 +1436,6 @@ local function apply_manual_folds(thread, bufnr)
 end
 
 M.apply_manual_folds = apply_manual_folds
-
-local function remove_auto_closed_fence_line(thread, line)
-  if not line then
-    return
-  end
-  for index = #(thread.auto_closed_fence_lines or {}), 1, -1 do
-    if thread.auto_closed_fence_lines[index] == line then
-      table.remove(thread.auto_closed_fence_lines, index)
-    end
-  end
-end
 
 local function guarded_text_lines(value)
   local lines = util.split_lines(value)
@@ -1465,27 +1473,103 @@ local function set_modifiable_text(bufnr, fn)
   end
 end
 
-local function set_render_index_range(thread, range, block)
-  for lnum = range.start, range.finish do
-    thread.render_index[lnum] = block
+local function record_render_atom(thread, block, range)
+  local atom = vim.tbl_extend("force", range, {
+    block = block,
+    item_id = block.item_id and tostring(block.item_id) or nil,
+  })
+  atom.text_offset = atom.text_start and (atom.text_start - atom.start) or nil
+  atom.has_auto_closed_fence = atom.auto_closed_line ~= nil
+  table.insert(thread.render_atoms, atom)
+  if block.type == "AssistantBlock" and atom.item_id and atom.text_start then
+    thread.stream_atoms_by_item_id[atom.item_id] = atom
+  end
+  return atom
+end
+
+local function apply_render_atom_anchors(thread, bufnr)
+  vim.api.nvim_buf_clear_namespace(bufnr, render_atom_ns, 0, -1)
+  for _, atom in ipairs(thread.render_atoms or {}) do
+    atom.start_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, render_atom_ns, atom.start - 1, 0, {
+      right_gravity = false,
+      strict = false,
+    })
+    atom.finish_extmark_id = vim.api.nvim_buf_set_extmark(bufnr, render_atom_ns, atom.finish, 0, {
+      right_gravity = true,
+      strict = false,
+    })
   end
 end
 
-local function clear_render_index_range(thread, start_line, finish_line)
-  for lnum = start_line, finish_line do
-    thread.render_index[lnum] = nil
+local function resolve_render_atom(bufnr, atom)
+  if not atom or not atom.start_extmark_id or not atom.finish_extmark_id then
+    return false
   end
+  local start_pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, render_atom_ns, atom.start_extmark_id, {})
+  local finish_pos = vim.api.nvim_buf_get_extmark_by_id(bufnr, render_atom_ns, atom.finish_extmark_id, {})
+  if #start_pos < 2 or #finish_pos < 2 then
+    return false
+  end
+  atom.start = start_pos[1] + 1
+  atom.finish = finish_pos[1]
+  if atom.finish < atom.start then
+    return false
+  end
+  if atom.text_offset then
+    atom.text_start = atom.start + atom.text_offset
+    atom.text_finish = atom.finish
+  end
+  atom.auto_closed_line = atom.has_auto_closed_fence and atom.finish or nil
+  return true
 end
 
-local function record_stream_range(thread, block, range)
-  if not block.item_id then
+local function refresh_render_atom_indexes(thread)
+  local bufnr = thread and thread.bufnr
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  thread.stream_ranges_by_item_id = thread.stream_ranges_by_item_id or {}
-  thread.stream_ranges_by_item_id[tostring(block.item_id)] = vim.tbl_extend("force", range, {
-    block = block,
-    item_id = tostring(block.item_id),
-  })
+
+  thread.render_index = {}
+  thread.placeholder_index = {}
+  thread.placeholder_by_item_id = {}
+  thread.stream_atoms_by_item_id = {}
+  thread.auto_closed_fence_lines = {}
+
+  for _, atom in ipairs(thread.render_atoms or {}) do
+    if resolve_render_atom(bufnr, atom) then
+      for lnum = atom.start, atom.finish do
+        thread.render_index[lnum] = atom.block
+      end
+      if atom.item_id and atom.block.type == "AssistantBlock" and atom.text_start then
+        thread.stream_atoms_by_item_id[atom.item_id] = atom
+      end
+      if atom.has_auto_closed_fence then
+        table.insert(thread.auto_closed_fence_lines, atom.finish)
+      end
+      if atom.fold then
+        atom.fold.start = atom.start
+        atom.fold.finish = atom.finish
+      end
+    end
+  end
+
+  for _, mark in ipairs(thread.header_marks or {}) do
+    resolve_mark_line(bufnr, ns, mark)
+    if mark.block and mark.line then
+      thread.render_index[mark.line] = mark.block
+    end
+  end
+  for _, mark in ipairs(thread.placeholder_marks or {}) do
+    resolve_mark_line(bufnr, ns, mark)
+    if mark.line then
+      thread.placeholder_index[mark.line] = mark
+      thread.render_index[mark.line] = mark.block
+    end
+    if mark.block and mark.block.item_id then
+      thread.placeholder_by_item_id[tostring(mark.block.item_id)] = mark
+    end
+  end
+  resolve_mark_line(bufnr, ns, thread.spinner_mark)
 end
 
 local compact_hook_timeline_blocks
@@ -1783,16 +1867,16 @@ render_block = function(thread, lines, block, opts)
     local decoration_start = finish > start and start + 1 or start
     mark_stream_decoration(thread, decoration_start, finish, decoration, block)
   end
-  if block.type == "AssistantBlock" and text_start and text_finish then
-    record_stream_range(thread, block, {
-      start = start,
-      finish = finish,
-      text_start = text_start,
-      text_finish = text_finish,
-      auto_closed_line = auto_closed_line,
-      fold_index = fold_index,
-      has_fence = text_has_fence(block.text),
-    })
+  local atom = record_render_atom(thread, block, {
+    start = start,
+    finish = finish,
+    text_start = text_start,
+    text_finish = text_finish,
+    auto_closed_line = auto_closed_line,
+    has_fence = text_has_fence(block.text or events.block_text(block)),
+  })
+  if fold_index then
+    atom.fold = thread.folds[fold_index]
   end
   add(lines, "")
 end
@@ -1831,7 +1915,8 @@ function M.render(thread)
   thread.render_index = {}
   thread.placeholder_index = {}
   thread.placeholder_by_item_id = {}
-  thread.stream_ranges_by_item_id = {}
+  thread.render_atoms = {}
+  thread.stream_atoms_by_item_id = {}
   thread.placeholder_marks = {}
   thread.header_marks = {}
   thread.auto_closed_fence_lines = {}
@@ -1868,6 +1953,7 @@ function M.render(thread)
   vim.bo[bufnr].modifiable = true
   replace_buffer_lines(bufnr, lines)
   vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+  apply_render_atom_anchors(thread, bufnr)
   apply_auto_closed_fence_marks(thread, bufnr)
   apply_header_marks(thread, bufnr)
   apply_placeholder_marks(thread, bufnr)
@@ -1896,123 +1982,128 @@ function M.render(thread)
   end
 end
 
-local function tail_stream_range(thread, range)
-  if not thread or not range or not thread_busy(thread) or not thread.spinner_mark then
-    return false
-  end
+local function replace_stream_atom_text(thread, atom, value)
   local bufnr = thread.bufnr
-  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
-    return false
-  end
-  return vim.api.nvim_buf_line_count(bufnr) == range.finish + 3 and thread.spinner_mark.line == range.finish + 2
-end
-
-local function refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, new_auto_closed_line)
-  clear_render_index_range(thread, range.start, math.max(old_finish, new_finish))
-  range.finish = new_finish
-  range.text_finish = new_finish
-  range.auto_closed_line = new_auto_closed_line
-  range.has_fence = range.has_fence or new_auto_closed_line ~= nil
-  set_render_index_range(thread, range, range.block)
-  update_fold_finish(thread, range, new_finish)
-  if thread.spinner_mark then
-    thread.spinner_mark.line = new_finish + 2
-    apply_spinner_mark(thread, thread.bufnr, thread.spinner_mark)
-    schedule_spinner_tick(thread)
-  end
-end
-
-local function replace_stream_block_text(thread, range, value)
-  local bufnr = thread.bufnr
-  local old_finish = range.finish
-  local old_auto_closed_line = range.auto_closed_line
   local lines, auto_closed_index = guarded_text_lines(value)
-  local follows = capture_follow_windows(thread, bufnr)
+  vim.api.nvim_buf_clear_namespace(bufnr, ns, atom.text_start - 1, atom.text_finish)
   set_modifiable_text(bufnr, function()
-    vim.api.nvim_buf_set_lines(bufnr, range.text_start - 1, range.text_finish, false, lines)
+    vim.api.nvim_buf_set_lines(bufnr, atom.text_start - 1, atom.text_finish, false, lines)
   end)
-  vim.api.nvim_buf_clear_namespace(bufnr, ns, range.text_start - 1, math.max(old_finish, range.text_start - 1))
-  remove_auto_closed_fence_line(thread, old_auto_closed_line)
-  local new_finish = range.text_start + #lines - 1
-  local new_auto_closed_line = auto_closed_index and (range.text_start + auto_closed_index - 1) or nil
-  if new_auto_closed_line then
-    mark_auto_closed_fence(thread, new_auto_closed_line)
-    vim.api.nvim_buf_set_extmark(bufnr, ns, new_auto_closed_line - 1, 0, {
-      end_col = buffer_line_length(bufnr, new_auto_closed_line),
+  atom.has_auto_closed_fence = auto_closed_index ~= nil
+  atom.has_fence = text_has_fence(value)
+  if atom.has_auto_closed_fence then
+    local line = atom.text_start + auto_closed_index - 1
+    vim.api.nvim_buf_set_extmark(bufnr, ns, line - 1, 0, {
+      end_col = buffer_line_length(bufnr, line),
       hl_group = "Comment",
       priority = 1200,
       strict = false,
     })
   end
-  refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, new_auto_closed_line)
-  apply_follow_windows(thread, follows)
-  return true
 end
 
-local function append_stream_block_delta(thread, range, delta)
+local function append_stream_atom_delta(thread, atom, delta)
   local bufnr = thread.bufnr
-  local old_finish = range.finish
-  local current_line = vim.api.nvim_buf_get_lines(bufnr, old_finish - 1, old_finish, false)[1] or ""
+  local current_line = vim.api.nvim_buf_get_lines(bufnr, atom.text_finish - 1, atom.text_finish, false)[1] or ""
   local parts = vim.split(delta, "\n", { plain = true })
-  local follows = capture_follow_windows(thread, bufnr)
   set_modifiable_text(bufnr, function()
-    vim.api.nvim_buf_set_text(bufnr, old_finish - 1, #current_line, old_finish - 1, #current_line, parts)
+    vim.api.nvim_buf_set_text(bufnr, atom.text_finish - 1, #current_line, atom.text_finish - 1, #current_line, parts)
   end)
-  local new_finish = old_finish + #parts - 1
-  refresh_tail_after_stream_edit(thread, range, old_finish, new_finish, nil)
-  apply_follow_windows(thread, follows)
-  return true
 end
 
-local function stream_delta_key(thread, item_id)
-  return tostring(thread.id or "") .. "\0" .. tostring(item_id)
+local function stream_flush_key(thread)
+  return tostring(thread.id or "")
 end
 
-local function flush_stream_delta(key)
-  local pending = pending_stream_deltas[key]
-  pending_stream_deltas[key] = nil
-  pending_stream_delta_timers[key] = nil
-  if not pending or pending.delta == "" then
+local function flush_stream_atoms(key)
+  local pending = pending_stream_flushes[key]
+  pending_stream_flushes[key] = nil
+  pending_stream_flush_timers[key] = nil
+  if not pending then
     return
   end
+
   local thread = pending.thread
-  local item_id = pending.item_id
-  local range = thread and thread.stream_ranges_by_item_id and thread.stream_ranges_by_item_id[item_id]
-  if not tail_stream_range(thread, range) then
+  local bufnr = thread and thread.bufnr
+  if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return
   end
-  local item = thread.items and thread.items[item_id]
-  if not item or item.type ~= "agentMessage" then
-    return
+
+  local edits = {}
+  for item_id, item_pending in pairs(pending.items) do
+    local atom = thread.stream_atoms_by_item_id and thread.stream_atoms_by_item_id[item_id]
+    local item = thread.items and thread.items[item_id]
+    if atom and item and item.type == "agentMessage" and resolve_render_atom(bufnr, atom) then
+      table.insert(edits, {
+        atom = atom,
+        item = item,
+        pending = item_pending,
+      })
+    end
   end
-  range.block.text = item.text or ""
-  range.block.raw = item
-  range.block.state = item.status or item.phase or item.state or range.block.state
-  if range.auto_closed_line or pending.has_fence then
-    replace_stream_block_text(thread, range, item.text or "")
-  else
-    append_stream_block_delta(thread, range, pending.delta)
+  table.sort(edits, function(left, right)
+    return left.atom.start > right.atom.start
+  end)
+
+  local follows = capture_follow_windows(thread, bufnr)
+  for _, edit in ipairs(edits) do
+    local atom = edit.atom
+    local item = edit.item
+    local desired = tostring(item.text or "")
+    local rendered = tostring(atom.block.text or "")
+    if desired ~= rendered and resolve_render_atom(bufnr, atom) then
+      local can_append = not atom.has_auto_closed_fence
+        and not atom.has_fence
+        and not edit.pending.has_fence
+        and desired == rendered .. edit.pending.delta
+      if can_append then
+        append_stream_atom_delta(thread, atom, edit.pending.delta)
+      else
+        replace_stream_atom_text(thread, atom, desired)
+      end
+    end
+    atom.block.text = desired
+    atom.block.raw = item
+    atom.block.state = item.status or item.phase or item.state or atom.block.state
   end
+
+  refresh_render_atom_indexes(thread)
+  if thread_busy(thread) and thread.spinner_mark then
+    apply_spinner_mark(thread, bufnr, thread.spinner_mark)
+    schedule_spinner_tick(thread)
+  end
+  apply_follow_windows(thread, follows)
 end
 
 local function queue_stream_delta(thread, item_id, delta)
-  local key = stream_delta_key(thread, item_id)
-  local pending = pending_stream_deltas[key]
+  local key = stream_flush_key(thread)
+  local pending = pending_stream_flushes[key]
   if not pending then
     pending = {
       thread = thread,
-      item_id = tostring(item_id),
+      items = {},
+    }
+    pending_stream_flushes[key] = pending
+  end
+
+  item_id = tostring(item_id)
+  local item_pending = pending.items[item_id]
+  if not item_pending then
+    item_pending = {
       delta = "",
       has_fence = false,
     }
-    pending_stream_deltas[key] = pending
+    pending.items[item_id] = item_pending
   end
   delta = tostring(delta or "")
-  pending.delta = pending.delta .. delta
-  pending.has_fence = pending.has_fence or delta:find("```", 1, true) ~= nil or delta:find("~~~", 1, true) ~= nil
-  if not pending_stream_delta_timers[key] then
-    pending_stream_delta_timers[key] = vim.defer_fn(function()
-      flush_stream_delta(key)
+  item_pending.delta = item_pending.delta .. delta
+  item_pending.has_fence = item_pending.has_fence
+    or delta:find("```", 1, true) ~= nil
+    or delta:find("~~~", 1, true) ~= nil
+
+  if not pending_stream_flush_timers[key] then
+    pending_stream_flush_timers[key] = vim.defer_fn(function()
+      flush_stream_atoms(key)
     end, stream_delta_flush_ms)
   end
 end
@@ -2026,11 +2117,12 @@ function M.try_stream_delta(thread, item_id, delta)
   if not bufnr or not vim.api.nvim_buf_is_valid(bufnr) then
     return false
   end
-  local range = thread.stream_ranges_by_item_id and thread.stream_ranges_by_item_id[tostring(item_id)]
-  if not tail_stream_range(thread, range) then
+  item_id = tostring(item_id)
+  local atom = thread.stream_atoms_by_item_id and thread.stream_atoms_by_item_id[item_id]
+  if not atom or not resolve_render_atom(bufnr, atom) then
     return false
   end
-  local item = thread.items and thread.items[tostring(item_id)]
+  local item = thread.items and thread.items[item_id]
   if not item or item.type ~= "agentMessage" then
     return false
   end
@@ -2039,6 +2131,7 @@ function M.try_stream_delta(thread, item_id, delta)
 end
 
 local function refresh_placeholder_block(thread, mark, item_id)
+  resolve_mark_line(thread.bufnr, ns, mark)
   local item = thread.items and thread.items[tostring(item_id)]
   if item then
     local turn_id = thread.item_turns and thread.item_turns[tostring(item_id)]

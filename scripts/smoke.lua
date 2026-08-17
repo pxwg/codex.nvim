@@ -5290,6 +5290,41 @@ do
     vim.treesitter.highlighter.active and vim.treesitter.highlighter.active[markdown_guard_buf],
     "coact markdown rendering should keep native buffer-wide Tree-sitter highlighting"
   )
+
+  local markdown_guard_item = markdown_guard_thread.items["assistant-markdown-guard"]
+  markdown_guard_item.text = markdown_guard_item.text .. "\nmore streamed diff"
+  assert(
+    render.try_stream_delta(markdown_guard_thread, markdown_guard_item.id, "\nmore streamed diff"),
+    "an unclosed non-tail fence should update through its render atom"
+  )
+  assert(
+    vim.wait(1000, function()
+      local text = table.concat(vim.api.nvim_buf_get_lines(markdown_guard_buf, 0, -1, false), "\n")
+      return text:find("more streamed diff", 1, true) ~= nil
+    end, 5),
+    "streaming should replace and re-guard an anchored unclosed fence"
+  )
+  assert(
+    #markdown_guard_thread.auto_closed_fence_lines == 1,
+    "streaming an open fence should retain one render-only closing line"
+  )
+
+  markdown_guard_item.text = markdown_guard_item.text .. "\n```"
+  assert(
+    render.try_stream_delta(markdown_guard_thread, markdown_guard_item.id, "\n```"),
+    "a closing fence should update the same non-tail render atom"
+  )
+  assert(
+    vim.wait(1000, function()
+      return #markdown_guard_thread.auto_closed_fence_lines == 0
+    end, 5),
+    "a provider closing fence should remove the render-only fence"
+  )
+  markdown_guard_lines = vim.api.nvim_buf_get_lines(markdown_guard_buf, 0, -1, false)
+  assert(
+    table.concat(markdown_guard_lines, "\n"):find("after the fence", 1, true),
+    "non-tail fence streaming should preserve the following user block"
+  )
 end
 local cleared_event_thread = state.ensure_thread("smoke-cleared-event", {
   title = "Smoke cleared event",
@@ -6128,8 +6163,24 @@ end
     text = "hello",
     status = "inProgress",
   })
+  state.upsert_item("smoke-stream-fast-path", "turn-fast", {
+    id = "fast-reasoning",
+    type = "reasoning",
+    summary = { "between outputs" },
+    content = { "anchored activity" },
+    status = "completed",
+  })
+  state.upsert_item("smoke-stream-fast-path", "turn-fast", {
+    id = "fast-assistant-tail",
+    type = "agentMessage",
+    text = "tail",
+    status = "inProgress",
+  })
   buffers.ensure("smoke-stream-fast-path")
   vim.api.nvim_set_current_buf(fast_thread.bufnr)
+  local shifted_placeholder = fast_thread.placeholder_marks and fast_thread.placeholder_marks[1]
+  local shifted_placeholder_line = shifted_placeholder and shifted_placeholder.line
+  assert(shifted_placeholder_line, "multi-position stream fixture should include an anchored placeholder")
 
   local original_render = render.render
   local render_count = 0
@@ -6154,18 +6205,32 @@ end
       params = {
         threadId = "smoke-stream-fast-path",
         turnId = "turn-fast",
+        itemId = "fast-assistant-tail",
+        delta = " end",
+      },
+    }, "a second assistant position should share the stream flush")
+    assert_handles_notification({
+      method = "item/agentMessage/delta",
+      params = {
+        threadId = "smoke-stream-fast-path",
+        turnId = "turn-fast",
         itemId = "fast-assistant",
         delta = "!",
       },
-    }, "assistant text delta should coalesce stream fast path writes")
+    }, "assistant text delta should coalesce stream atom writes")
     local lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
-    assert(not table.concat(lines, "\n"):match("hello world!"), "assistant delta should wait for the coalesced flush")
+    local text = table.concat(lines, "\n")
+    assert(
+      not text:match("hello world!") and not text:match("tail end"),
+      "assistant deltas should wait for the coalesced buffer flush"
+    )
     assert(
       vim.wait(1000, function()
         lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
-        return table.concat(lines, "\n"):match("hello world!") ~= nil
+        text = table.concat(lines, "\n")
+        return text:match("hello world!") ~= nil and text:match("tail end") ~= nil
       end, 5),
-      "assistant delta should update visible text on the coalesced flush"
+      "one flush should update multiple anchored assistant positions"
     )
     vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
       return false
@@ -6190,6 +6255,23 @@ end
       "assistant newline delta should update visible text on the coalesced flush"
     )
     assert(vim.api.nvim_buf_line_count(fast_thread.bufnr) == line_count + 1, "newline delta should append one line")
+    lines = vim.api.nvim_buf_get_lines(fast_thread.bufnr, 0, -1, false)
+    text = table.concat(lines, "\n")
+    assert(
+      text:find("hello world!\nnext line", 1, true) and text:find("tail end", 1, true),
+      "a non-tail stream edit should preserve later render atoms"
+    )
+    assert(
+      shifted_placeholder.line == shifted_placeholder_line + 1
+        and fast_thread.placeholder_index[shifted_placeholder.line] == shifted_placeholder,
+      "placeholder indexes should resolve from extmarks after an earlier stream atom grows"
+    )
+    assert(
+      fast_thread.spinner_mark
+        and fast_thread.spinner_mark.extmark_id
+        and fast_thread.spinner_mark.line == vim.api.nvim_buf_line_count(fast_thread.bufnr) - 1,
+      "the spinner anchor should follow multi-position stream edits"
+    )
     vim.wait(smoke_config.get().ui.render_delay_ms + 25, function()
       return false
     end, 5)

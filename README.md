@@ -26,7 +26,7 @@ The provider layer keeps each backend protocol small and explicit while normaliz
 - Modern Neovim TUI render: provider items are normalized into blocks, then drawn with extmark headers, placeholders, virtual lines, stream gutters, composer token highlights, and a busy spinner.
 - Streaming render for agent messages, reasoning, plans, command output, MCP calls, dynamic tool calls, collab-agent calls, web search, image events, and file changes.
 - Expandable reasoning/tool/agent/patch placeholders with `za`; detail scratch views with `K` or `:Coact detail`.
-- Prompt-anchor window following that keeps the composer stable while the active provider streams, but suspends auto-follow when you scroll away.
+- Extmark-anchored render atoms that coalesce updates across multiple transcript positions without moving the separate composer; per-window auto-follow suspends when you scroll away.
 - App-server lifecycle notifications are preserved as timeline blocks; unknown notifications are retained as raw blocks and can be shown for debugging.
 - Patch review window for `item/fileChange/requestApproval` and legacy `applyPatchApproval`.
 - Pair-mode file-change review through provider-specific bridges, using the same file-buffer changed-block UI as the internal Neovim patch tool.

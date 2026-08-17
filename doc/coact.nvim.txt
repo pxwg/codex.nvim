@@ -566,6 +566,11 @@ activity -> output chronology. Busy turns show a spinner whose label follows
 the current generation state: thinking, reasoning, streaming, summarizing,
 tooling, patch review, syncing, or stopping.
 
+Assistant text blocks are tracked as extmark-anchored render atoms. Provider
+deltas for multiple visible blocks are coalesced into one per-buffer flush and
+update those anchored ranges directly; structural block changes still use a
+full render. The composer remains a separate `coact-input` buffer.
+
 The renderer tracks per-window view state. A transcript window near the bottom
 follows the conversation while the active provider streams. Cursor movement or scrolling away
 suspends that follow state for that window.
